@@ -18,6 +18,7 @@ By default, standalone mode uses XDG paths (`~/.local/share/pokedaisy/`, `~/.con
 
 - Add `/home/deck/Applications/pokedaisy.AppImage` as a Non-Steam Game.
 - Recommended Launch Options: `--fullscreen` (add `"<rom-path>"` to boot directly into a game, or omit to open the built-in ROM picker).
+- Optional Steam Grid artwork (`grid-vertical.png`, `grid-horizontal.png`, `hero.png`, `logo.png`) is in [`artwork/`](artwork/) (and in `steam-grid/` inside `PokeDaisy.AppDir` / `--appimage-extract`).
 - **Display:** On `1280x800` (`SETTINGS > LAYOUT: AUTO`), the game renders at 4x on the left (`960x800` pane) and the live companion sidebar stays visible on the right (`320x800`).
 - **Touch & Trackpad:** Tap or drag directly on the sidebar tabs/buttons.
 - **Deck Controls (`Gamepad` template):**

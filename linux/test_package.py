@@ -1,6 +1,6 @@
 """Check the real native/cross package and keep its architecture-specific name."""
 from pathlib import Path
-import subprocess,sys,tempfile,zipfile
+import os,shutil,subprocess,sys,tempfile,zipfile
 binary=Path(sys.argv[1]).resolve()
 options=sys.argv[2:];extra=6 if '--dsperate' in options else 0
 # Stand-in cores: the binary's own bytes (the package checks a core's architecture, not what it does).
@@ -49,4 +49,41 @@ with tempfile.TemporaryDirectory(prefix='pd-linux-package-') as d:
         assert z.getinfo(pm+'/pokedaisy/pokedaisy-linux').external_attr>>16 & 0o111
         assert not any(n.endswith('launch.sh') for n in names)
         assert all(n==pm+'/PokeDaisy.sh' or n.startswith(pm+'/pokedaisy/') for n in names)
-print('PASS architecture-specific package, actual executable, license/source records, overwrite refusal and the PortMaster layout')
+# AppImage AppDir layout + stand-in appimagetool invocation.
+with tempfile.TemporaryDirectory(prefix='pd-linux-appdir-') as d:
+    d_path=Path(d)
+    result=subprocess.run([sys.executable,str(script),'--appdir-only',*options,str(binary),str(d_path)],capture_output=True,text=True)
+    assert result.returncode==0,result.stderr
+    appdir=d_path/'PokeDaisy.AppDir'
+    assert appdir.is_dir() and Path(result.stdout.strip())==appdir
+    assert (appdir/'usr/bin/pokedaisy-linux').read_bytes()==binary.read_bytes()
+    assert (appdir/'usr/bin/pokedaisy-linux').stat().st_mode & 0o111
+    assert (appdir/'usr/bin/pokedaisy_gba_libretro.so').read_bytes()==binary.read_bytes()
+    assert (appdir/'usr/bin/pokedaisy_gbc_libretro.so').exists()
+    assert (appdir/'AppRun').stat().st_mode & 0o111
+    desktop=(appdir/'PokeDaisy.desktop').read_text()
+    assert 'Categories=Game;Emulator;' in desktop and 'Exec=pokedaisy-linux' in desktop
+    assert (appdir/'pokedaisy.png').read_bytes()[:4]==b'\x89PNG'
+    assert (appdir/'.DirIcon').read_bytes()[:4]==b'\x89PNG'
+    assert (appdir/'LICENSE').exists() and (appdir/'NOTICE').exists()
+    assert (appdir/'licenses/mGBA-MPL-2.0.txt').exists()
+    assert (appdir/'licenses/armGBA-MPL-2.0.txt').exists()
+    for grid_name in ('grid-vertical.png','grid-horizontal.png','hero.png','logo.png'):
+        assert (appdir/'steam-grid'/grid_name).read_bytes()[:4]==b'\x89PNG'
+    if shutil.which('ldd') and 'libSDL2-2.0.so' in subprocess.run(['ldd',str(binary)],capture_output=True,text=True).stdout:
+        assert list((appdir/'usr/lib').iterdir())==[appdir/'usr/lib/libSDL2-2.0.so.0']
+    # Overwrite refusal
+    assert subprocess.run([sys.executable,str(script),'--appdir-only',*options,str(binary),str(d_path)],capture_output=True,text=True).returncode!=0
+
+with tempfile.TemporaryDirectory(prefix='pd-linux-appimage-') as d:
+    d_path=Path(d)
+    fake_sdl=d_path/'libSDL2-2.0.so.0';fake_sdl.write_bytes(b'SDL2')
+    fake_tool=d_path/'fake-appimagetool';fake_tool.write_text('#!/bin/sh\necho "$APPIMAGE_EXTRACT_AND_RUN:$ARCH:$*" > "$3"\n');fake_tool.chmod(0o755)
+    env=dict(os.environ,APPIMAGETOOL=str(fake_tool))
+    result=subprocess.run([sys.executable,str(script),'--appimage','--sdl2-lib',str(fake_sdl),*options,str(binary),str(d_path)],capture_output=True,text=True,env=env)
+    assert result.returncode==0,result.stderr
+    appimage=d_path/(name+'.AppImage')
+    assert appimage.exists() and Path(result.stdout.strip())==appimage
+    expected_arch={62:'x86_64',183:'aarch64'}[arch]
+    assert '--no-appstream' in appimage.read_text() and f'1:{expected_arch}:' in appimage.read_text()
+print('PASS architecture-specific package, actual executable, license/source records, overwrite refusal, PortMaster, and AppImage layout')

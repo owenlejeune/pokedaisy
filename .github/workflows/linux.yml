@@ -77,10 +77,19 @@ jobs:
           python3 linux/libretro-unified/package.py --cores-only --strip strip --source-ref "$(git rev-parse HEAD)" \
             "$RUNNER_TEMP/cores/pokedaisy_gbc_libretro.so" "$RUNNER_TEMP/cores/pokedaisy_gba_libretro.so" \
             "$RUNNER_TEMP/pd-ds/pokedaisy_ds_libretro.so" "$RUNNER_TEMP/linux-artifacts/pokedaisy-libretro-x86_64.zip"
+          curl -fLsS --retry 3 -o "$RUNNER_TEMP/appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          chmod +x "$RUNNER_TEMP/appimagetool"
+          APPIMAGETOOL="$RUNNER_TEMP/appimagetool" python3 linux/package.py --appimage \
+            linux/build/pokedaisy-linux "$RUNNER_TEMP/linux-artifacts" \
+            --core "$RUNNER_TEMP/cores/pokedaisy_gba_libretro.so" --core "$RUNNER_TEMP/cores/pokedaisy_gbc_libretro.so" \
+            --core "$RUNNER_TEMP/cores/pokedaisy_ds_libretro.so"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: pokedaisy-linux-x86_64
-          path: ${{ runner.temp }}/linux-artifacts/*.zip
+          path: |
+            ${{ runner.temp }}/linux-artifacts/*.zip
+            ${{ runner.temp }}/linux-artifacts/*.AppImage
           if-no-files-found: error
   trimui:
     # 22.04: its aarch64 cross glibc (2.35) has none of 2.38's C23 redirects; armgba/glibc_compat.* bind the rest to 2.17.

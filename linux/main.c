@@ -273,6 +273,21 @@ static void pointer_at(int x, int y) {
   pointerX = px < -0x7FFF ? -0x7FFF : px > 0x7FFF ? 0x7FFF : px;
   pointerY = py < -0x7FFF ? -0x7FFF : py > 0x7FFF ? 0x7FFF : py;
 }
+static void pointer_at_window(int wx, int wy) {
+  int winW = 0, winH = 0, ow = 0, oh = 0;
+  if (!window || !renderer)
+    return;
+  SDL_GetWindowSize(window, &winW, &winH);
+  if (SDL_GetRendererOutputSize(renderer, &ow, &oh) == 0 && winW > 0 && winH > 0 && ow > 0 && oh > 0)
+    pointer_at(wx * ow / winW, wy * oh / winH);
+  else
+    pointer_at(wx, wy);
+}
+static void pointer_at_finger(float nx, float ny) {
+  int ow = 0, oh = 0;
+  if (renderer && SDL_GetRendererOutputSize(renderer, &ow, &oh) == 0 && ow > 0 && oh > 0)
+    pointer_at((int)(nx * ow), (int)(ny * oh));
+}
 static bool audioLost, outputChanged;
 static int key_named(const char *s);
 /* POCKET_KEYS="TICK:KEY[:HOLD],...": presses scripted by loop tick (each events() call), held HOLD ticks (2), for
@@ -350,14 +365,23 @@ static void events(void) {
       if (e.jaxis.axis == 5)
         key(R2, e.jaxis.value > 16000);
     }
-    if (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) {
-      pointer_at(e.button.x, e.button.y);
-      pointerDown = e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT;
+    if ((e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) && e.button.which != SDL_TOUCH_MOUSEID) {
+      pointer_at_window(e.button.x, e.button.y);
+      if (e.button.button == SDL_BUTTON_LEFT)
+        pointerDown = e.type == SDL_MOUSEBUTTONDOWN;
     }
-    if (e.type == SDL_MOUSEMOTION)
-      pointer_at(e.motion.x, e.motion.y);
-    if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_FOCUS_LOST)
+    if (e.type == SDL_MOUSEMOTION && e.motion.which != SDL_TOUCH_MOUSEID)
+      pointer_at_window(e.motion.x, e.motion.y);
+    if (e.type == SDL_FINGERDOWN || e.type == SDL_FINGERUP) {
+      pointer_at_finger(e.tfinger.x, e.tfinger.y);
+      pointerDown = e.type == SDL_FINGERDOWN;
+    }
+    if (e.type == SDL_FINGERMOTION)
+      pointer_at_finger(e.tfinger.x, e.tfinger.y);
+    if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
       held = 0;
+      pointerDown = false;
+    }
     if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED)
       outputChanged = true;
   }
@@ -1794,17 +1818,17 @@ int main(int argc, char **argv) {
   // window to the screen keeping its shape, so a window there was letterboxed and EXPAND couldn't reach the edges.
   const char *desktop = getenv("XDG_CURRENT_DESKTOP");
   bool fullscreen = cli.fullscreen || getenv("POCKET_FULLSCREEN") != NULL || (desktop && strstr(desktop, "gamescope"));
-  if (fullscreen && SDL_GetCurrentDisplayMode(0, &display))
-    fullscreen = false;
+  SDL_GetCurrentDisplayMode(0, &display);
   // POCKET_WINDOW=WxH: a window the size of a device's panel, for trying a layout on a desktop.
   int winW = W, winH = H;
   const char *size = getenv("POCKET_WINDOW");
   if (size &&
       (sscanf(size, "%dx%d", &winW, &winH) != 2 || winW < 160 || winH < 144 || winW > 8192 || winH > 8192))
     winW = W, winH = H;
+  if (fullscreen && display.w > 0 && display.h > 0)
+    winW = display.w, winH = display.h;
   window = SDL_CreateWindow("PokeDaisy Linux", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                            fullscreen ? display.w : winW, fullscreen ? display.h : winH,
-                            fullscreen ? SDL_WINDOW_FULLSCREEN : SDL_WINDOW_RESIZABLE);
+                            winW, winH, fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : SDL_WINDOW_RESIZABLE);
   // Presents wait for the refresh (the pacing, above); a driver without it gets the timer.
   renderer = window ? SDL_CreateRenderer(window, -1, getenv("POCKET_NO_VSYNC") ? 0 : SDL_RENDERER_PRESENTVSYNC) : NULL;
   if (!renderer && window)

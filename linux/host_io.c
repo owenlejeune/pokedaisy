@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 struct checked_save {
@@ -21,6 +22,10 @@ static bool close_save(struct VFile *vf) {
   bool ok = s->inner->close(s->inner);
   s->status->failed |= !ok;
   s->status->closed = true;
+  s->status->vf = NULL;
+  s->status->mapped = NULL;
+  s->status->mappedSize = 0;
+  s->status->fd = -1;
   free(s);
   return ok;
 }
@@ -63,10 +68,19 @@ static ssize_t write_save(struct VFile *vf, const void *data, size_t size) {
 }
 static void *map_save(struct VFile *vf, size_t size, int flags) {
   struct checked_save *s = (void *)vf;
-  return s->inner->map(s->inner, size, flags);
+  void *p = s->inner->map(s->inner, size, flags);
+  if (p && (flags & MAP_WRITE)) {
+    s->status->mapped = p;
+    s->status->mappedSize = size;
+  }
+  return p;
 }
 static void unmap_save(struct VFile *vf, void *p, size_t size) {
   struct checked_save *s = (void *)vf;
+  if (p && p == s->status->mapped) {
+    s->status->mapped = NULL;
+    s->status->mappedSize = 0;
+  }
   s->inner->unmap(s->inner, p, size);
 }
 static void truncate_save(struct VFile *vf, size_t size) {
@@ -96,7 +110,13 @@ static bool sync_save(struct VFile *vf, void *p, size_t size) {
 }
 struct VFile *pocket_save_wrap(struct VFile *inner,
                                struct pocket_save_status *status) {
+  if (!status) {
+    if (inner)
+      inner->close(inner);
+    return NULL;
+  }
   memset(status, 0, sizeof *status);
+  status->fd = -1;
   if (!inner) {
     status->failed = true;
     status->closed = true;
@@ -127,7 +147,56 @@ struct VFile *pocket_save_wrap(struct VFile *inner,
     status->failed = true;
     return NULL;
   }
+  status->vf = result;
   return result;
+}
+
+struct VFile *pocket_save_open(const char *path, int flags,
+                               struct pocket_save_status *status) {
+  if (!path)
+    return pocket_save_wrap(NULL, status);
+  int fd = open(path, flags, 0666);
+  if (fd < 0)
+    return pocket_save_wrap(NULL, status);
+  struct VFile *inner = VFileFromFD(fd);
+  if (!inner)
+    return pocket_save_wrap(NULL, status);
+  struct VFile *result = pocket_save_wrap(inner, status);
+  if (!result)
+    return NULL;
+  status->fd = fd;
+  status->writable = (flags & O_ACCMODE) != O_RDONLY;
+  return result;
+}
+
+bool pocket_save_flush(struct pocket_save_status *status) {
+  if (!status)
+    return false;
+  if (status->closed || !status->vf)
+    return status->closed && !status->failed;
+  if (status->failed)
+    return false;
+  bool ok = true;
+  if (status->mapped && status->mappedSize > 0) {
+    if (msync(status->mapped, status->mappedSize, MS_SYNC) != 0)
+      ok = false;
+    if (ok && status->fd >= 0 && status->writable) {
+      /* Emit a VFS write event (IN_MODIFY) without changing bytes or fd offset. */
+      struct stat st;
+      if (fstat(status->fd, &st) == 0 && st.st_size > 0) {
+        unsigned char first = *(const unsigned char *)status->mapped;
+        if (pwrite(status->fd, &first, 1, 0) != 1)
+          ok = false;
+      }
+    }
+  }
+  if (!status->vf->sync(status->vf, NULL, 0))
+    ok = false;
+  if (status->fd >= 0 && fsync(status->fd) != 0)
+    ok = false;
+  if (!ok)
+    status->failed = true;
+  return ok;
 }
 
 static unsigned char *read_all(const char *path, size_t *size) {

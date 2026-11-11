@@ -57,6 +57,12 @@ static void test_cli_parsing(void) {
 
   char *argvBadNaming[] = {"pokedaisy-linux", "--save-naming", "bogus"};
   assert(!pocket_parse_cli(3, argvBadNaming, &cli));
+
+  char *argvBadExt[] = {"pokedaisy-linux", "--save-ext", "bin"};
+  assert(!pocket_parse_cli(3, argvBadExt, &cli));
+
+  char *argvSrm[] = {"pokedaisy-linux", "--save-ext", "srm", "/roms/emerald.gba"};
+  assert(pocket_parse_cli(4, argvSrm, &cli) && cli.saveExt == POCKET_SAVE_EXT_SRM);
 }
 
 static void test_xdg_and_data_modes(void) {
@@ -242,12 +248,74 @@ static void test_legacy_cwd_fallback(void) {
   assert(system(cmd) == 0);
 }
 
+static void test_save_ext_and_srm_fallback(void) {
+  clear_env();
+  char tmpl[] = "/tmp/pd-save-ext-XXXXXX";
+  char *dir = mkdtemp(tmpl);
+  assert(dir);
+
+  char saveDir[1024], stateDir[1024], srmFile[1024], savFile[1024], sav[1024], ss[1024];
+  snprintf(saveDir, sizeof saveDir, "%s/saves", dir);
+  snprintf(stateDir, sizeof stateDir, "%s/states", dir);
+  assert(pocket_mkdir_p(saveDir, 0755));
+  assert(pocket_mkdir_p(stateDir, 0755));
+
+  struct pocket_cli cli;
+  struct pocket_paths paths;
+
+  /* 1. Default without any existing files -> .sav */
+  char *argvAuto[] = {"pokedaisy-linux", "--save-dir", saveDir, "--state-dir", stateDir, "/roms/Emerald.gba"};
+  assert(pocket_parse_cli(6, argvAuto, &cli));
+  assert(pocket_resolve_base(&cli, &paths));
+  assert(pocket_resolve_storage(&cli, &paths, NULL, NULL));
+  assert(pocket_game_save_path(&cli, &paths, cli.rom, sav, sizeof sav, ss, sizeof ss));
+  snprintf(savFile, sizeof savFile, "%s/Emerald.sav", saveDir);
+  assert(strcmp(sav, savFile) == 0);
+
+  /* 2. Existing .srm triggers auto fallback when .sav is absent */
+  snprintf(srmFile, sizeof srmFile, "%s/Emerald.srm", saveDir);
+  FILE *f = fopen(srmFile, "wb");
+  assert(f && !fclose(f));
+  assert(pocket_game_save_path(&cli, &paths, cli.rom, sav, sizeof sav, ss, sizeof ss));
+  assert(strcmp(sav, srmFile) == 0);
+
+  /* 3. Explicit --save-ext sav overrides existing .srm */
+  char *argvForceSav[] = {"pokedaisy-linux", "--save-dir", saveDir, "--save-ext", "sav", "/roms/Emerald.gba"};
+  assert(pocket_parse_cli(6, argvForceSav, &cli));
+  assert(pocket_resolve_base(&cli, &paths));
+  assert(pocket_resolve_storage(&cli, &paths, NULL, NULL));
+  assert(pocket_game_save_path(&cli, &paths, cli.rom, sav, sizeof sav, ss, sizeof ss));
+  assert(strcmp(sav, savFile) == 0);
+
+  /* 4. Both .sav and .srm present -> auto still prefers .sav */
+  f = fopen(savFile, "wb");
+  assert(f && !fclose(f));
+  assert(pocket_parse_cli(6, argvAuto, &cli));
+  assert(pocket_resolve_base(&cli, &paths));
+  assert(pocket_resolve_storage(&cli, &paths, NULL, NULL));
+  assert(pocket_game_save_path(&cli, &paths, cli.rom, sav, sizeof sav, ss, sizeof ss));
+  assert(strcmp(sav, savFile) == 0);
+
+  /* 5. Explicit --save-ext srm chooses .srm even when .sav exists */
+  char *argvForceSrm[] = {"pokedaisy-linux", "--save-dir", saveDir, "--save-ext", "srm", "/roms/Emerald.gba"};
+  assert(pocket_parse_cli(6, argvForceSrm, &cli));
+  assert(pocket_resolve_base(&cli, &paths));
+  assert(pocket_resolve_storage(&cli, &paths, NULL, NULL));
+  assert(pocket_game_save_path(&cli, &paths, cli.rom, sav, sizeof sav, ss, sizeof ss));
+  assert(strcmp(sav, srmFile) == 0);
+
+  char cmd[1200];
+  snprintf(cmd, sizeof cmd, "rm -rf %s", dir);
+  assert(system(cmd) == 0);
+}
+
 int main(void) {
   test_cli_parsing();
   test_xdg_and_data_modes();
   test_legacy_cwd_fallback();
   test_cascading_precedence_and_retrodeck();
   test_settings_preserves_paths();
-  puts("PASS Linux CLI, XDG defaults, legacy CWD fallback, cascading save/state resolution, stem naming, and settings preservation");
+  test_save_ext_and_srm_fallback();
+  puts("PASS Linux CLI, XDG defaults, legacy CWD fallback, cascading save/state resolution, stem naming, .srm fallback, and settings preservation");
   return 0;
 }

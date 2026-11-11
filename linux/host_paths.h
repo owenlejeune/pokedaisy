@@ -18,6 +18,12 @@ enum pocket_save_naming {
   POCKET_SAVE_NAMING_FULL,
 };
 
+enum pocket_save_ext {
+  POCKET_SAVE_EXT_AUTO = 0, // .sav by default, falling back to an existing .srm
+  POCKET_SAVE_EXT_SAV,      // force .sav (--save-ext sav)
+  POCKET_SAVE_EXT_SRM,      // force .srm (--save-ext srm)
+};
+
 struct pocket_cli {
   const char *dataDir;
   const char *saveFile;
@@ -32,6 +38,7 @@ struct pocket_cli {
   bool showVersion;
   enum pocket_layout_mode layout;
   enum pocket_save_naming saveNaming;
+  enum pocket_save_ext saveExt;
 };
 
 struct pocket_paths {

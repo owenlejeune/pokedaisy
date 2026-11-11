@@ -2,13 +2,23 @@
 #ifndef POCKET_HOST_IO_H
 #define POCKET_HOST_IO_H
 #include <mgba-util/vfs.h>
+#include <stddef.h>
 #include <time.h>
 struct pocket_save_status {
-  bool failed, closed;
+  bool failed, closed, writable;
+  struct VFile *vf;
+  void *mapped;
+  size_t mappedSize;
+  int fd;
 };
 /* Takes inner on success or failure. status must outlive the returned VFile. */
 struct VFile *pocket_save_wrap(struct VFile *inner,
                                struct pocket_save_status *status);
+/* Opens path (e.g. O_CREAT | O_RDWR) and wraps it while tracking fd for flush. */
+struct VFile *pocket_save_open(const char *path, int flags,
+                               struct pocket_save_status *status);
+/* Synchronously flushes mapped save pages (MS_SYNC) and backing fd (fsync). */
+bool pocket_save_flush(struct pocket_save_status *status);
 /* Copies a battery save into DIR/pokedaisy-backups/ before the game opens it,
  * as the Android app does (SaveBackups.kt): <name>.backup-<yyyymmdd-hhmmss>.<ext>,
  * only when it differs from the newest copy (mGBA's 16-byte RTC footer

@@ -1553,8 +1553,10 @@ static void run_game(const char *path, int maxFrames, const char *shot, bool fro
     hotkeyMask = 0;
     if (!menuOpen)
       hkOn = hotkeys_held(hotkeys, &hkFired);
-    if (hkFired & (1u << HK_SAVE))
+    if (hkFired & (1u << HK_SAVE)) {
+      sram_write(sav, &sramCopy, true);
       notice(state_file(ss, true) ? "State saved" : "State save failed");
+    }
     if (hkFired & (1u << HK_LOAD))
       notice(!exists(ss) ? "No state saved yet" : state_file(ss, false) ? "State loaded" : "State load failed");
     if ((hkFired & (1u << HK_REWIND)) && !hostSet.rewind)
@@ -1621,6 +1623,7 @@ static void run_game(const char *path, int maxFrames, const char *shot, bool fro
           menuOpen = false;
           break;
         case M_SAVE:
+          sram_write(sav, &sramCopy, true);
           notice(state_file(ss, true) ? "State saved" : "State save failed");
           menuOpen = false;
           break;

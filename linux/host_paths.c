@@ -98,6 +98,7 @@ void pocket_print_usage(const char *prog, void *stream) {
           "      --state-dir <DIR>       Directory for save states\n"
           "      --layout <MODE>         Layout mode: auto, side-by-side, overlay\n"
           "      --save-naming <MODE>    Save filename mode: auto, stem, full\n"
+          "      --save-ext <EXT>        Battery save extension: sav, srm (default: sav)\n"
           "      --frames <N>            Run N frames and exit\n"
           "      --shot <FILE>           Capture frame PNG on exit\n"
           "  -h, --help                  Show this help and exit\n"
@@ -124,6 +125,16 @@ static bool parse_save_naming(const char *val, enum pocket_save_naming *out) {
     *out = POCKET_SAVE_NAMING_STEM;
   else if (!strcmp(val, "full"))
     *out = POCKET_SAVE_NAMING_FULL;
+  else
+    return false;
+  return true;
+}
+
+static bool parse_save_ext(const char *val, enum pocket_save_ext *out) {
+  if (!strcmp(val, "sav"))
+    *out = POCKET_SAVE_EXT_SAV;
+  else if (!strcmp(val, "srm"))
+    *out = POCKET_SAVE_EXT_SRM;
   else
     return false;
   return true;
@@ -183,6 +194,12 @@ bool pocket_parse_cli(int argc, char **argv, struct pocket_cli *cli) {
     } else if (!strcmp(arg, "--save-naming")) {
       if (i + 1 >= argc || !parse_save_naming(argv[i + 1], &cli->saveNaming)) {
         fprintf(stderr, "Invalid or missing --save-naming (expected auto, stem, full)\n");
+        return false;
+      }
+      i++;
+    } else if (!strcmp(arg, "--save-ext")) {
+      if (i + 1 >= argc || !parse_save_ext(argv[i + 1], &cli->saveExt)) {
+        fprintf(stderr, "Invalid or missing --save-ext (expected sav, srm)\n");
         return false;
       }
       i++;
@@ -353,13 +370,25 @@ bool pocket_game_save_path(const struct pocket_cli *cli, const struct pocket_pat
       *dot = '\0';
   }
   char savLeaf[520], ssLeaf[520];
-  snprintf(savLeaf, sizeof savLeaf, "%s.sav", name);
+  bool wantSrm = cli && cli->saveExt == POCKET_SAVE_EXT_SRM;
+  if (wantSrm)
+    snprintf(savLeaf, sizeof savLeaf, "%s.srm", name);
+  else
+    snprintf(savLeaf, sizeof savLeaf, "%s.sav", name);
   snprintf(ssLeaf, sizeof ssLeaf, "%s.ss", name);
-  if (non_empty(cli->saveFile)) {
+  if (cli && non_empty(cli->saveFile)) {
     if (!copy_str(savOut, savCap, cli->saveFile))
       return false;
   } else if (!join_path(savOut, savCap, paths->savesDir, savLeaf)) {
     return false;
+  } else if ((!cli || cli->saveExt == POCKET_SAVE_EXT_AUTO) && !file_exists(savOut)) {
+    char srmLeaf[520], srmCandidate[1024];
+    snprintf(srmLeaf, sizeof srmLeaf, "%s.srm", name);
+    if (join_path(srmCandidate, sizeof srmCandidate, paths->savesDir, srmLeaf) &&
+        file_exists(srmCandidate)) {
+      if (!copy_str(savOut, savCap, srmCandidate))
+        return false;
+    }
   }
   return join_path(ssOut, ssCap, paths->statesDir, ssLeaf);
 }

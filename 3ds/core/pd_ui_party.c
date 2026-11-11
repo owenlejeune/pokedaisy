@@ -710,14 +710,27 @@ static struct art_geometry card_geometry(const struct pd_party_style* st, int ex
 }
 
 // The cards on the canvas, over its backdrop, or only the backdrop if `cards` is false. selected: which card, -1 none.
+static uint32_t* ensure_px(uint32_t** buf, size_t* cap, size_t need) {
+    if (*cap >= need) return *buf;
+    uint32_t* next = realloc(*buf, need * sizeof(uint32_t));
+    if (!next) return NULL;
+    *buf = next;
+    *cap = need;
+    return next;
+}
+
 static bool draw_cards(struct pd_canvas* c, const struct pd_game* g, const struct pd_party_art* art, const struct window_at* at,
                        const struct card_scale* k, const struct pd_snapshot* s, int selected, bool cards) {
-    static uint32_t px[PD_UI_WIDTH * PD_UI_HEIGHT];
+    static uint32_t* px;
+    static size_t pxCap;
     struct pd_canvas screen;
     bool up = k->num != k->den;
     int w = (c->w * k->den + k->num - 1) / k->num + 1, h = (c->h * k->den + k->num - 1) / k->num + 1;
-    pd_canvas_init(&screen, w, h, px);
-    if (up && !pd_party_screen(&screen, g)) return false;
+    if (up) {
+        if (w <= 0 || h <= 0 || !ensure_px(&px, &pxCap, (size_t) w * (size_t) h)) return false;
+        pd_canvas_init(&screen, w, h, px);
+        if (!pd_party_screen(&screen, g)) return false;
+    }
     struct art_geometry a = card_geometry(art->style, k->extraW);
     cardTextsOn = up;
     cardTextCount = 0;
@@ -1577,13 +1590,17 @@ void ui_party_tab(struct pd_ui* ui, struct pd_canvas* c, const struct pd_game* g
 void ui_item_grid(struct pd_ui* ui, struct pd_canvas* c, const struct pd_game* g, const struct pd_snapshot* s) {
     int x0 = MARGIN, y0 = CONTENT_Y - 2, w = c->w - 2 * MARGIN, h = c->h - y0 - 1;
     int rows = 3;
-    static uint32_t before[PD_UI_WIDTH * PD_UI_HEIGHT];
+    static uint32_t* before;
+    static size_t beforeCap;
+    if (c->w <= 0 || c->h <= 0 || !ensure_px(&before, &beforeCap, (size_t) c->w * (size_t) c->h)) return;
     const struct pd_party_art* art = pd_party_art_for(g);
     struct window_at at[PD_PARTY_SIZE];
     struct card_scale k;
     if (art && card_grid(art->style, c, at, &k)) {
         // The cards; a Pokémon the item can't go on fades into the backdrop.
-        static uint32_t empty[PD_UI_WIDTH * PD_UI_HEIGHT];
+        static uint32_t* empty;
+        static size_t emptyCap;
+        if (!ensure_px(&empty, &emptyCap, (size_t) c->w * (size_t) c->h)) return;
         memcpy(empty, c->px, (size_t) c->w * c->h * 4);
         struct pd_canvas back;
         pd_canvas_init(&back, c->w, c->h, empty);

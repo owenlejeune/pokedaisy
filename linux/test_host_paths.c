@@ -209,11 +209,45 @@ static void test_settings_preserves_paths(void) {
   unlink(path);
 }
 
+static void test_legacy_cwd_fallback(void) {
+  char orig[1024];
+  assert(getcwd(orig, sizeof orig) != NULL);
+
+  char tmpl[] = "/tmp/pd-legacy-cwd-XXXXXX";
+  char *dir = mkdtemp(tmpl);
+  assert(dir);
+  assert(chdir(dir) == 0);
+  assert(pocket_mkdir_p("saves", 0755));
+
+  struct pocket_cli cli;
+  struct pocket_paths paths;
+  char *argv[] = {"pokedaisy-linux", "/roms/Emerald.gba"};
+  assert(pocket_parse_cli(2, argv, &cli));
+  assert(pocket_resolve_base(&cli, &paths));
+  assert(paths.legacyCwd);
+  assert(strcmp(paths.dataDir, ".") == 0);
+  assert(strcmp(paths.configFile, "./settings.ini") == 0);
+  assert(pocket_resolve_storage(&cli, &paths, NULL, NULL));
+  assert(!paths.useStemNaming);
+  assert(!paths.isolateBackups);
+
+  char sav[1024], ss[1024];
+  assert(pocket_game_save_path(&cli, &paths, cli.rom, sav, sizeof sav, ss, sizeof ss));
+  assert(strcmp(sav, "./saves/Emerald.gba.sav") == 0);
+  assert(strcmp(ss, "./states/Emerald.gba.ss") == 0);
+
+  assert(chdir(orig) == 0);
+  char cmd[1200];
+  snprintf(cmd, sizeof cmd, "rm -rf %s", dir);
+  assert(system(cmd) == 0);
+}
+
 int main(void) {
   test_cli_parsing();
   test_xdg_and_data_modes();
+  test_legacy_cwd_fallback();
   test_cascading_precedence_and_retrodeck();
   test_settings_preserves_paths();
-  puts("PASS Linux CLI, XDG defaults, cascading save/state resolution, stem naming, and settings preservation");
+  puts("PASS Linux CLI, XDG defaults, legacy CWD fallback, cascading save/state resolution, stem naming, and settings preservation");
   return 0;
 }

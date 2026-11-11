@@ -2,6 +2,7 @@
 // game's own menu as big buttons - FIGHT, then BAG / RUN / POKéMON, or the move grid, or the party to send in. A tap
 // presses the game's own buttons (pd_binput.c); only while it's the player's turn.
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "pd_binput.h"
@@ -59,15 +60,25 @@ void ui_fade_rect(struct pd_canvas* c, const uint32_t* before, int x, int y, int
     }
 }
 
-static uint32_t saved[PD_UI_WIDTH * PD_UI_HEIGHT];
+static uint32_t* saved;
+static size_t savedCap;
 
-static void save_rect(const struct pd_canvas* c, int x, int y, int w, int h) {
+static bool save_rect(const struct pd_canvas* c, int x, int y, int w, int h) {
+    if (w <= 0 || h <= 0) return false;
+    size_t need = (size_t) w * (size_t) h;
+    if (need > savedCap) {
+        uint32_t* next = realloc(saved, need * sizeof(uint32_t));
+        if (!next) return false;
+        saved = next;
+        savedCap = need;
+    }
     for (int yy = 0; yy < h; yy++) {
         for (int xx = 0; xx < w; xx++) {
             int sx = x + xx, sy = y + yy;
             saved[yy * w + xx] = sx >= 0 && sx < c->w && sy >= 0 && sy < c->h ? c->px[sy * c->w + sx] : 0;
         }
     }
+    return true;
 }
 
 // A beveled button (PlatinumButton): a near-black outline, a light band across the top, darker bands down the sides.
@@ -102,10 +113,10 @@ static void label(struct pd_canvas* c, int x, int y, int w, int h, const char* t
 
 static void button(struct pd_ui* ui, struct pd_canvas* c, int x, int y, int w, int h, const char* text, int scale,
                    uint32_t fill, uint32_t frame, int id, bool enabled) {
-    if (!enabled) save_rect(c, x, y, w, h);
+    bool fade = !enabled && save_rect(c, x, y, w, h);
     ui_platinum(ui, c, x, y, w, h, fill, frame, enabled ? id : -1);
     label(c, x, y, w, h, text, scale);
-    if (!enabled) ui_fade_rect(c, saved, x, y, w, h, DISABLED_ALPHA);
+    if (fade) ui_fade_rect(c, saved, x, y, w, h, DISABLED_ALPHA);
 }
 
 // One ball per team member, grey once fainted, discs for the empty slots (PartyBallRow).

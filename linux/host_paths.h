@@ -45,6 +45,7 @@ struct pocket_paths {
   char controllerDb[1024];
   bool useStemNaming;
   bool isolateBackups;
+  bool legacyCwd;
 };
 
 /* Parse argc/argv into cli. Returns false on unknown flags or missing option values. */

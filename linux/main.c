@@ -1250,7 +1250,10 @@ static void panel_follow(void) {
   int ow = W, oh = H;
   SDL_GetRendererOutputSize(renderer, &ow, &oh);
   char v[32];
-  snprintf(v, sizeof v, "%dx%d", ow, oh);
+  if (cli.layout == POCKET_LAYOUT_OVERLAY)
+    snprintf(v, sizeof v, "auto");
+  else
+    snprintf(v, sizeof v, "%dx%d", ow, oh);
   if (strcmp(v, panelValue)) {
     snprintf(panelValue, sizeof panelValue, "%s", v);
     optionsChanged = true;

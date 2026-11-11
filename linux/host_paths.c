@@ -211,6 +211,11 @@ static bool dir_exists(const char *path) {
   return non_empty(path) && stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
+static bool file_exists(const char *path) {
+  struct stat st;
+  return non_empty(path) && stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
 static bool resolve_xdg_subdir(const char *xdgEnv, const char *homeRel, char *out, size_t cap) {
   const char *xdg = getenv(xdgEnv);
   if (non_empty(xdg)) {
@@ -245,6 +250,12 @@ bool pocket_resolve_base(const struct pocket_cli *cli, struct pocket_paths *path
     if (!pocket_expand_home(cli->dataDir, paths->dataDir, sizeof paths->dataDir))
       return false;
     if (!copy_str(paths->configDir, sizeof paths->configDir, paths->dataDir))
+      return false;
+  } else if (!cli->retrodeck && (dir_exists("saves") || file_exists("settings.ini"))) {
+    paths->legacyCwd = true;
+    if (!copy_str(paths->dataDir, sizeof paths->dataDir, "."))
+      return false;
+    if (!copy_str(paths->configDir, sizeof paths->configDir, "."))
       return false;
   } else {
     if (!resolve_xdg_subdir("XDG_DATA_HOME", ".local/share/pokedaisy",
@@ -301,6 +312,7 @@ bool pocket_resolve_storage(const struct pocket_cli *cli, struct pocket_paths *p
       return false;
   }
 
+  bool xdgDefault = !non_empty(cli->dataDir) && !paths->legacyCwd;
   bool customSaveLocation = non_empty(cli->saveFile) || non_empty(cli->saveDir) ||
                             non_empty(envSave) || cli->retrodeck || non_empty(cfgSaveDir);
   if (cli->saveNaming == POCKET_SAVE_NAMING_STEM)
@@ -308,9 +320,9 @@ bool pocket_resolve_storage(const struct pocket_cli *cli, struct pocket_paths *p
   else if (cli->saveNaming == POCKET_SAVE_NAMING_FULL)
     paths->useStemNaming = false;
   else
-    paths->useStemNaming = !non_empty(cli->dataDir) || customSaveLocation;
+    paths->useStemNaming = xdgDefault || customSaveLocation;
 
-  paths->isolateBackups = customSaveLocation || !non_empty(cli->dataDir);
+  paths->isolateBackups = customSaveLocation || xdgDefault;
   if (paths->isolateBackups) {
     if (!join_path(paths->backupsDir, sizeof paths->backupsDir, paths->dataDir, "backups"))
       return false;

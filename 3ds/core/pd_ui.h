@@ -66,6 +66,9 @@ int pd_ff_index(int speed);
 // plorpOS: how ORIGINAL's picture fills the screen - whole pixels, the largest 3:2, or all of it.
 enum pd_scaling { PD_SCALE_INTEGER, PD_SCALE_FIT, PD_SCALE_STRETCH, PD_SCALINGS };
 
+// Single-screen companion layout mode on wide Linux/libretro hosts.
+enum pd_layout { PD_LAYOUT_AUTO, PD_LAYOUT_SIDE_BY_SIDE, PD_LAYOUT_OVERLAY, PD_LAYOUTS };
+
 // What the player set; the host loads and saves it (pd_settings.h).
 struct pd_settings {
     int screenMode; // enum pd_screen_mode
@@ -101,6 +104,7 @@ struct pd_settings {
     bool ffNormal;   // FF MODE: NORMAL; off = SMART, 1x while the game waits for the player
     bool cheats;     // CHEATS: the game's file's codes on
     int theme;       // THEME: a pd_themes[] id
+    int layout;      // enum pd_layout (hosts with hasLayout)
     char saveDir[512];  // Optional host override (settings.ini save_dir=), preserved on save
     char stateDir[512]; // Optional host override (settings.ini state_dir=), preserved on save
 };
@@ -177,6 +181,7 @@ struct pd_host_info {
     bool hasHud;         // Optional: the host draws the HUD over the game (its SETTINGS row)
     bool hasDisplayFilter; // host implements OFF / LCD
     bool hasQuickMenu;   // host implements the selectable RING / GRID quick menu
+    bool hasLayout;      // host supports SIDE BY SIDE vs OVERLAY companion layout (st->layout)
     bool hasButtonRows;  // Optional: QUICK MENU / COMPANION / HUD CURSOR button rows (the host reads settings.*Btn)
     bool hasFfChip;      // Optional: a fast-forward chip on the tab bar (the Linux host's; the 3DS has its own hotkeys)
     bool frontendOwnsPlayback; // Optional: the frontend runs fast-forward, save states and leaving the game: no such rows

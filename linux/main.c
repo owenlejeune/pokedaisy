@@ -432,9 +432,10 @@ static struct {
   int ffSpeed; // 0 = MAX (as many frames as fit), else 2..8
   bool rewind, lcd;
   bool swapAB; // the controller's A / B and X / Y the other way round (devices disagree on which is SDL's "A")
+  int layout;  // 0 = AUTO, 1 = SIDE BY SIDE, 2 = OVERLAY
   int hotkey[HK_ACTIONS]; // the HOTKEYS page's button per action, -1 none
   int dsHotkey[HK_ACTIONS];
-} hostSet = {0, false, false, false, {R2, L2, -1, -1}, {R3, L3, -1, -1}};
+} hostSet = {0, false, false, false, 0, {R2, L2, -1, -1}, {R3, L3, -1, -1}};
 static char hostIni[PATH_MAX];
 static void host_load(void) {
   FILE *f = fopen(hostIni, "r");
@@ -449,6 +450,8 @@ static void host_load(void) {
       hostSet.lcd = v != 0;
     if (sscanf(line, "swap_ab=%d", &v) == 1)
       hostSet.swapAB = v != 0;
+    if (sscanf(line, "layout=%d", &v) == 1 && v >= 0 && v <= 2)
+      hostSet.layout = v;
     for (int i = 0; i < HK_ACTIONS; i++) {
       char key[32], name[16];
       snprintf(key, sizeof key, "hk_%s=%%15s", hotkeyIds[i]);
@@ -467,7 +470,8 @@ static void host_save(void) {
   FILE *f = fopen(hostIni, "w");
   if (!f)
     return;
-  fprintf(f, "ff_speed=%d\nrewind=%d\nlcd=%d\nswap_ab=%d\n", hostSet.ffSpeed, hostSet.rewind, hostSet.lcd, hostSet.swapAB);
+  fprintf(f, "ff_speed=%d\nrewind=%d\nlcd=%d\nswap_ab=%d\nlayout=%d\n", hostSet.ffSpeed, hostSet.rewind, hostSet.lcd,
+          hostSet.swapAB, hostSet.layout);
   for (int i = 0; i < HK_ACTIONS; i++) {
     fprintf(f, "hk_%s=%s\n", hotkeyIds[i], key_name(hostSet.hotkey[i]));
     fprintf(f, "ds_hk_%s=%s\n", hotkeyIds[i], key_name(hostSet.dsHotkey[i]));
@@ -481,7 +485,8 @@ static const char *hotkey_label(int k) {
                                        [P3] = "PADDLE 3", [P4] = "PADDLE 4"};
   return k >= 0 && k < (int)(sizeof labels / sizeof labels[0]) && labels[k] ? labels[k] : "OFF";
 }
-/* The actions held this frame; *fired: those whose button went down now. The keyboard's own keys count too. */
+/* The actions held this frame; *fired: those whose button went down now. The keyboard's own keys count too,
+ * along with unbound Steam Deck back paddles (P1: FF, P4: save / Select+P4: load). */
 static unsigned hotkeys_held(const int *hotkeys, unsigned *fired) {
   unsigned on = 0;
   *fired = 0;
@@ -500,6 +505,10 @@ static unsigned hotkeys_held(const int *hotkeys, unsigned *fired) {
     if (pressed & bit)
       *fired |= 1u << i;
   }
+  if ((held & (1u << P1)) && !(hotkeyMask & (1u << P1)))
+    on |= 1u << HK_FF;
+  if ((pressed & (1u << P4)) && !(hotkeyMask & (1u << P4)))
+    *fired |= (held & (1u << SELECT)) ? (1u << HK_LOAD) : (1u << HK_SAVE);
   if (held & (1u << FFKEY))
     on |= 1u << HK_FF;
   if (held & (1u << RWKEY))
@@ -672,6 +681,7 @@ static struct {
 } options[160];
 static int optionN;
 static char panelValue[32];
+static char layoutValue[24] = "auto";
 static bool optionsChanged;
 static void options_from(const struct retro_core_option_v2_definition *d) {
   for (optionN = 0; d && d->key && optionN < (int)(sizeof options / sizeof options[0]); d++, optionN++) {
@@ -746,6 +756,8 @@ static bool environment(unsigned cmd, void *data) {
     v->value = NULL;
     if (!strcmp(v->key, "pokedaisy_panel"))
       v->value = panelValue;
+    if (!strcmp(v->key, "pokedaisy_layout"))
+      v->value = layoutValue;
     for (int i = 0; i < optionN && !v->value; i++)
       if (!strcmp(options[i].key, v->key))
         v->value = options[i].value;
@@ -1270,14 +1282,18 @@ static void perf_frame(uint64_t start, double hz) {
 }
 
 /* ---- a game ---- */
+static void layout_follow(int mode) {
+  const char *v = mode == POCKET_LAYOUT_SIDE_BY_SIDE ? "side-by-side" : mode == POCKET_LAYOUT_OVERLAY ? "overlay" : "auto";
+  if (strcmp(v, layoutValue)) {
+    snprintf(layoutValue, sizeof layoutValue, "%s", v);
+    optionsChanged = true;
+  }
+}
 static void panel_follow(void) {
   int ow = W, oh = H;
   SDL_GetRendererOutputSize(renderer, &ow, &oh);
   char v[32];
-  if (cli.layout == POCKET_LAYOUT_OVERLAY)
-    snprintf(v, sizeof v, "auto");
-  else
-    snprintf(v, sizeof v, "%dx%d", ow, oh);
+  snprintf(v, sizeof v, "%dx%d", ow, oh);
   if (strcmp(v, panelValue)) {
     snprintf(panelValue, sizeof panelValue, "%s", v);
     optionsChanged = true;
@@ -1382,7 +1398,7 @@ extern int pd_ds_run(const char *, const char *, int, const char *, SDL_Renderer
 static bool ds_running(void) { return running != 0; }
 #endif
 // The host menu's rows, top to bottom (fast-forward is the FAST FORWARD hotkey's, held).
-enum { M_RESUME, M_SAVE, M_LOAD, M_HOTKEYS, M_REWIND, M_FFSPEED, M_LCD, M_SWAP, M_QUIT, M_COUNT };
+enum { M_RESUME, M_SAVE, M_LOAD, M_HOTKEYS, M_REWIND, M_FFSPEED, M_LCD, M_SWAP, M_LAYOUT, M_QUIT, M_COUNT };
 static void run_game(const char *path, int maxFrames, const char *shot, bool fromList) {
 #ifdef POCKET_DSPERATE
   const char *ext = strrchr(path, '.');
@@ -1454,6 +1470,8 @@ static void run_game(const char *path, int maxFrames, const char *shot, bool fro
   settings_migrate();
   optionN = 0;
   pixelFormat = RETRO_PIXEL_FORMAT_0RGB1555;
+  int effLayout = cli.layout != POCKET_LAYOUT_AUTO ? (int)cli.layout : hostSet.layout;
+  layout_follow(effLayout);
   panel_follow();
   optionsChanged = false;
   core.set_environment(environment);
@@ -1531,6 +1549,8 @@ static void run_game(const char *path, int maxFrames, const char *shot, bool fro
     snprintf(rows[M_REWIND], 40, "REWIND  %s", hostSet.rewind ? "ON" : "OFF");
     snprintf(rows[M_LCD], 40, "LCD FILTER  %s", hostSet.lcd ? "ON" : "OFF");
     snprintf(rows[M_SWAP], 40, "A/B BUTTONS  %s", hostSet.swapAB ? "SWAPPED" : "NORMAL");
+    static const char *const layoutLabels[3] = {"AUTO", "SIDE BY SIDE", "OVERLAY"};
+    snprintf(rows[M_LAYOUT], 40, "LAYOUT  %s", layoutLabels[effLayout >= 0 && effLayout < 3 ? effLayout : 0]);
     snprintf(rows[M_HOTKEYS], 40, "HOTKEYS");
     snprintf(rows[M_QUIT], 40, fromList ? "QUIT TO GAME LIST" : "QUIT");
     for (int i = 0; i < M_COUNT; i++)
@@ -1545,6 +1565,7 @@ static void run_game(const char *path, int maxFrames, const char *shot, bool fro
       confirming = 0;
       capturing = -1;
       if (menuOpen) {
+        sram_write(sav, &sramCopy, true);
         pd_menu_init(&menu, "POKEDAISY", rowPtrs, M_COUNT);
         menu.overlay = true;
       }
@@ -1658,6 +1679,12 @@ static void run_game(const char *path, int maxFrames, const char *shot, bool fro
           held = 0; // the button that chose this is now the other one: let it go
           host_save();
           break;
+        case M_LAYOUT:
+          effLayout = (effLayout + 1) % 3;
+          hostSet.layout = effLayout;
+          host_save();
+          layout_follow(effLayout);
+          break;
         case M_HOTKEYS:
           hkPage = true;
           pd_menu_init(&hkMenu, "HOTKEYS", hkPtrs, HK_ACTIONS);
@@ -1700,7 +1727,12 @@ static void run_game(const char *path, int maxFrames, const char *shot, bool fro
     ffSpeedNow = runs;
     rewindingNow = rewinding;
     audioKeepEvery = (unsigned)runs;
-    gameKeys = joypad(held & ~hotkeyMask & ~((1u << MENU) | (1u << FFKEY) | (1u << RWKEY)));
+    unsigned padMasked = held & ~hotkeyMask & ~((1u << MENU) | (1u << FFKEY) | (1u << RWKEY));
+    if ((held & (1u << P2)) && !(hotkeyMask & (1u << P2)))
+      padMasked |= 1u << X;
+    if ((held & (1u << P3)) && !(hotkeyMask & (1u << P3)))
+      padMasked |= 1u << Y;
+    gameKeys = joypad(padMasked);
     uint64_t t = SDL_GetPerformanceCounter();
     if (rewinding) {
       muted = true;
@@ -1716,7 +1748,7 @@ static void run_game(const char *path, int maxFrames, const char *shot, bool fro
       }
     }
     emuMs = (double)(SDL_GetPerformanceCounter() - t) * 1000.0 / SDL_GetPerformanceFrequency() / runs;
-    if (++frames % 120 == 0)
+    if (++frames % 30 == 0)
       sram_write(sav, &sramCopy, true);
     present_game(NULL);
     if (maxFrames && frames >= maxFrames) {

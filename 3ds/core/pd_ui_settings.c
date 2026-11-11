@@ -229,6 +229,11 @@ void ui_settings_tab(struct pd_ui* ui, struct pd_canvas* c, const struct pd_game
     if (host && host->hasPerf) setting(ui, c, ix, &y, iw, SETTING_PERF, "FPS / CPU", st->showPerf ? "ON" : "OFF");
     if (host && host->hasDisplayFilter)
         setting(ui, c, ix, &y, iw, SETTING_FILTER, "FILTER", st->lcdFilter ? "LCD" : "OFF");
+    if (host && host->hasLayout) {
+        static const char* const LAYOUTS[PD_LAYOUTS] = {"AUTO", "SIDE BY SIDE", "OVERLAY"};
+        int mode = st->layout >= 0 && st->layout < PD_LAYOUTS ? st->layout : PD_LAYOUT_AUTO;
+        setting(ui, c, ix, &y, iw, SETTING_LAYOUT, "LAYOUT", LAYOUTS[mode]);
+    }
     if (host && host->hasQuickMenu)
         setting(ui, c, ix, &y, iw, SETTING_QUICK_MENU, "QUICK MENU", st->quickGrid ? "GRID" : "RING");
     if (host && host->hasButtonRows) {

@@ -50,12 +50,14 @@ static const unsigned retroId[NKEYS] = {
     RETRO_DEVICE_ID_JOYPAD_L2,    RETRO_DEVICE_ID_JOYPAD_R2,   RETRO_DEVICE_ID_JOYPAD_SELECT, RETRO_DEVICE_ID_JOYPAD_L3};
 
 /* ---- the options this layer adds to mGBA's ---- */
-#define PD_OPTION_COUNT 2
+#define PD_OPTION_COUNT 3
 static const struct retro_core_option_v2_definition pdOptions[PD_OPTION_COUNT] = {
     {"pokedaisy_canvas", "Companion canvas", NULL, "The frame size the core reports: the game sits in it at a whole scale, the companion fills it. auto = 320x240.", NULL, NULL,
      {{"auto", NULL}, {"320x240", NULL}, {"341x256", NULL}, {"400x300", NULL}, {"427x240", NULL}, {NULL, NULL}}, "auto"},
     {"pokedaisy_panel", "Panel size", NULL, "The frontend's screen. With it the core picks its own canvas: EXPAND at the game's whole scale, ZOOM OUT one scale less. auto = the canvas option alone.", NULL, NULL,
      {{"auto", NULL}, {"480x320", NULL}, {"480x800", NULL}, {"640x480", NULL}, {"720x480", NULL}, {"720x540", NULL}, {"720x720", NULL}, {"752x560", NULL}, {"960x544", NULL}, {"960x720", NULL}, {"1024x768", NULL}, {"1280x720", NULL}, {"1280x800", NULL}, {"1600x1440", NULL}, {"1920x1080", NULL}, {NULL, NULL}}, "auto"},
+    {"pokedaisy_layout", "Companion layout", NULL, "auto = side-by-side on wide >=16:10 panels (1280x800+), overlay on handhelds.", NULL, NULL,
+     {{"auto", NULL}, {"side-by-side", NULL}, {"overlay", NULL}, {NULL, NULL}}, "auto"},
 };
 
 static retro_environment_t realEnv;
@@ -195,16 +197,24 @@ static bool env_wrap(unsigned cmd, void *data) {
 }
 
 /* ---- the frame: the canvas the frontend sees, and where the game and the overlays are drawn ---- */
-#define CANVAS_MAX_W 640
-#define CANVAS_MAX_H 480
+#define CANVAS_MAX_W 1920
+#define CANVAS_MAX_H 1080
+#define OVERLAY_MAX_W 640
+#define OVERLAY_MAX_H 480
 static int CW = 320, CH = 240;       // the canvas now (follows the aspect, see canvas_update)
 static int CWMAX = 320, CHMAX = 240; // the largest canvas: what the buffers hold and what the frontend is told is the maximum
 static int panelW, panelH;           // the frontend's screen, 0 = unknown (the canvas option alone then)
+static bool sideActive;              // true when 2-pane side-by-side mode is active (game left, live companion right)
+static int leftW = 320, rightW, sideScale = 1, sideLogW, sideLogH;
 static int baseGW = 240, baseGH = 160; // the game's frame before the first picture
 static uint32_t *cvs;     // the companion's canvas, 0xRRGGBB
 static uint16_t *out565;  // what the frontend gets
 static struct pd_canvas canvas;
+static uint32_t *sidePixels;
+static size_t sideCap;
+static struct pd_canvas sideCanvas;
 static unsigned gameW, gameH;
+static inline int game_pane_w(void) { return sideActive ? leftW : CW; }
 
 static char message[128];
 static int messageFrames;
@@ -289,9 +299,10 @@ static inline uint32_t xbgr_to_rgb(uint32_t p) { return (p & 255) << 16 | (p >> 
 
 /* The Quick Menu uses a larger logical canvas on the Brick. Preserve the frozen expanded view at panel scale. */
 static void draw_wide_quick_background(void) {
-  const int w = CW * (int)wideH <= CH * (int)wideW ? CW : CH * (int)wideW / (int)wideH;
-  const int h = CW * (int)wideH <= CH * (int)wideW ? CW * (int)wideH / (int)wideW : CH;
-  const int x0 = (CW - w) / 2, y0 = (CH - h) / 2;
+  const int gw = game_pane_w();
+  const int w = gw * (int)wideH <= CH * (int)wideW ? gw : CH * (int)wideW / (int)wideH;
+  const int h = gw * (int)wideH <= CH * (int)wideW ? gw * (int)wideH / (int)wideW : CH;
+  const int x0 = (gw - w) / 2, y0 = (CH - h) / 2;
   memset(cvs, 0, (size_t)CW * CH * sizeof *cvs);
   for (int y = 0; y < h; y++) {
     const uint32_t *src = wideFrame + (unsigned)y * wideH / (unsigned)h * wideW;
@@ -301,16 +312,17 @@ static void draw_wide_quick_background(void) {
   }
 }
 
-/* The game, whole-scale and centred, over a black canvas. */
+/* The game, whole-scale and centred inside the game pane, over a black canvas. */
 static void draw_game(void) {
   memset(cvs, 0, (size_t)CW * CH * sizeof *cvs);
   if (!outputBuffer || !gameW || !gameH)
     return;
+  const int gw = game_pane_w();
   if (wideReady) {
-    int ws = CW / (int)wideW < CH / (int)wideH ? CW / (int)wideW : CH / (int)wideH;
+    int ws = gw / (int)wideW < CH / (int)wideH ? gw / (int)wideW : CH / (int)wideH;
     if (ws < 1)
       ws = 1;
-    int wx = (CW - (int)wideW * ws) / 2, wy = (CH - (int)wideH * ws) / 2;
+    int wx = (gw - (int)wideW * ws) / 2, wy = (CH - (int)wideH * ws) / 2;
     for (unsigned y = 0; y < wideH; y++)
       for (int k = 0; k < ws; k++) {
         int cy = wy + (int)y * ws + k;
@@ -320,17 +332,17 @@ static void draw_game(void) {
           uint32_t p = xbgr_to_rgb(wideFrame[y * wideW + x]);
           for (int j = 0; j < ws; j++) {
             int cx = wx + (int)x * ws + j;
-            if (cx >= 0 && cx < CW)
+            if (cx >= 0 && cx < gw)
               cvs[(size_t)cy * CW + cx] = p;
           }
         }
       }
     return;
   }
-  int s = CW / (int)gameW < CH / (int)gameH ? CW / (int)gameW : CH / (int)gameH;
+  int s = gw / (int)gameW < CH / (int)gameH ? gw / (int)gameW : CH / (int)gameH;
   if (s < 1)
     s = 1;
-  int ox = (CW - (int)gameW * s) / 2, oy = (CH - (int)gameH * s) / 2;
+  int ox = (gw - (int)gameW * s) / 2, oy = (CH - (int)gameH * s) / 2;
   for (unsigned y = 0; y < gameH; y++) {
     uint32_t *row = cvs + (size_t)(oy + (int)y * s) * CW + ox;
     if (oy + (int)y * s < 0 || oy + ((int)y + 1) * s > CH)
@@ -369,11 +381,12 @@ static void draw_game_fast(void) {
   memset(out565, 0, (size_t)CW * CH * sizeof *out565);
   if (!outputBuffer || !gameW || !gameH)
     return;
+  const int gw = game_pane_w();
   if (wideReady) {
-    int ws = CW / (int)wideW < CH / (int)wideH ? CW / (int)wideW : CH / (int)wideH;
+    int ws = gw / (int)wideW < CH / (int)wideH ? gw / (int)wideW : CH / (int)wideH;
     if (ws < 1)
       ws = 1;
-    int wx = (CW - (int)wideW * ws) / 2, wy = (CH - (int)wideH * ws) / 2;
+    int wx = (gw - (int)wideW * ws) / 2, wy = (CH - (int)wideH * ws) / 2;
     for (unsigned y = 0; y < wideH; y++) {
       int cy = wy + (int)y * ws;
       if (cy < 0 || cy + ws > CH)
@@ -392,10 +405,10 @@ static void draw_game_fast(void) {
     }
     return;
   }
-  int s = CW / (int)gameW < CH / (int)gameH ? CW / (int)gameW : CH / (int)gameH;
+  int s = gw / (int)gameW < CH / (int)gameH ? gw / (int)gameW : CH / (int)gameH;
   if (s < 1)
     s = 1;
-  int ox = (CW - (int)gameW * s) / 2, oy = (CH - (int)gameH * s) / 2;
+  int ox = (gw - (int)gameW * s) / 2, oy = (CH - (int)gameH * s) / 2;
   for (unsigned y = 0; y < gameH; y++) {
     int cy = oy + (int)y * s;
     if (cy < 0 || cy + s > CH)
@@ -452,11 +465,14 @@ static void blend_overlay(const uint32_t *px, int w, int h, int scale, int x0, i
   }
 }
 
-static void dim(int alpha) {
-  for (size_t i = 0; i < (size_t)CW * CH; i++) {
-    uint32_t p = cvs[i];
-    cvs[i] = (((p >> 16 & 255) * (255 - alpha) / 255) << 16) | (((p >> 8 & 255) * (255 - alpha) / 255) << 8) |
-             ((p & 255) * (255 - alpha) / 255);
+static void dim(int alpha, int gw) {
+  for (int y = 0; y < CH; y++) {
+    uint32_t *row = cvs + (size_t)y * CW;
+    for (int x = 0; x < gw; x++) {
+      uint32_t p = row[x];
+      row[x] = (((p >> 16 & 255) * (255 - alpha) / 255) << 16) | (((p >> 8 & 255) * (255 - alpha) / 255) << 8) |
+               ((p & 255) * (255 - alpha) / 255);
+    }
   }
 }
 
@@ -465,8 +481,9 @@ static void dim(int alpha) {
 static bool canDupe, haveGameFrame, repeatedFrame;
 static void present(void) {
   if (messageFrames > 0) {
-    pd_fill(&canvas, 4, CH - 50, CW - 8, 24, 0x181818);
-    pd_text_fit(&canvas, 10, CH - 46, CW - 20, message, 0xffffff, PD_NO_SHADOW);
+    const int gw = game_pane_w();
+    pd_fill(&canvas, 4, CH - 50, gw - 8, 24, 0x181818);
+    pd_text_fit(&canvas, 10, CH - 46, gw - 20, message, 0xffffff, PD_NO_SHADOW);
     messageFrames--;
   }
   if (!direct565)
@@ -487,13 +504,23 @@ static int hudOx, hudOy, hudScale = 1; // where draw_hud last put the HUD on the
 static unsigned shortcutKeys, shortcutBlocked;
 static bool shortcutExclusive;
 static bool maskGame;     // while an overlay is up the game sees no keys
+static int lastOptLayout = -1;
 
 /* The pad buttons for the quick menu, the companion and the HUD cursor are PokeDaisy's own SETTINGS rows
  * (a core option is out of reach in plorpOS): each frame's key index, -1 for none. */
 static int key_of(int btn) {
   return btn == PD_BTN_X ? X : btn == PD_BTN_Y ? Y : btn == PD_BTN_L2 ? L2 : btn == PD_BTN_R2 ? R2 : -1;
 }
-static void read_options(void) {} // (kept for the option-update hook: the canvas is read once at load)
+static int layout_of_opt(const char *v) {
+  if (!v)
+    return PD_LAYOUT_AUTO;
+  if (!strcmp(v, "side-by-side"))
+    return PD_LAYOUT_SIDE_BY_SIDE;
+  if (!strcmp(v, "overlay"))
+    return PD_LAYOUT_OVERLAY;
+  return PD_LAYOUT_AUTO;
+}
+static void read_options(void);
 
 static void poll_keys(void) {
   held = 0;
@@ -637,17 +664,18 @@ static int hud_wild_uncaught(const struct pd_game *g, const struct pd_snapshot *
 /* The HUD over the game's own picture, a canvas pixel a game pixel: SIZE picks the mini HUD (SMALL, NORMAL) or the full
  * one (LARGE). */
 static void draw_hud(void) {
-  int gs = CW / (int)gameW < CH / (int)gameH ? CW / (int)gameW : CH / (int)gameH;
+  const int gw = game_pane_w();
+  int gs = gw / (int)gameW < CH / (int)gameH ? gw / (int)gameW : CH / (int)gameH;
   if (gs < 1)
     gs = 1;
-  int ax = (CW - (int)gameW * gs) / 2, ay = (CH - (int)gameH * gs) / 2, aw = (int)gameW * gs, ah = (int)gameH * gs;
+  int ax = (gw - (int)gameW * gs) / 2, ay = (CH - (int)gameH * gs) / 2, aw = (int)gameW * gs, ah = (int)gameH * gs;
   if (wideReady) { // the wide view (EXPAND, ZOOM OUT) is what is on screen: anchor to it, not to the centred game picture
-    int ws = CW / (int)wideW < CH / (int)wideH ? CW / (int)wideW : CH / (int)wideH;
+    int ws = gw / (int)wideW < CH / (int)wideH ? gw / (int)wideW : CH / (int)wideH;
     if (ws < 1)
       ws = 1;
     aw = (int)wideW * ws;
     ah = (int)wideH * ws;
-    ax = (CW - aw) / 2;
+    ax = (gw - aw) / 2;
     ay = (CH - ah) / 2;
   }
   // SMALL / NORMAL: the mini HUD (a core's canvas is the game's own pixels, shown 3x to 6x); LARGE: the full one.
@@ -655,7 +683,7 @@ static void draw_hud(void) {
   int scale = 1;
   int w = aw / scale, hh = ah / scale;
   if (!hudPixels)
-    hudPixels = malloc((size_t)CANVAS_MAX_W * CANVAS_MAX_H * sizeof *hudPixels);
+    hudPixels = malloc((size_t)CWMAX * CHMAX * sizeof *hudPixels);
   if (!hudPixels)
     return;
   uint32_t key = hud_key(&game, &snap, &hudState, &settings) ^ (uint32_t)(w * 65599 + hh);
@@ -679,15 +707,16 @@ static void draw_hud(void) {
 /* ---- game-code layer: EXPAND (pk_wide), the field read, WILD ENCOUNTERS ---- */
 
 
-/* The EXPAND window for the canvas and a fw x fh game: the canvas over the game's whole scale (one less for
+/* The EXPAND window for the game pane and a fw x fh game: the pane over the game's whole scale (one less for
  * ZOOM OUT), within pk_wide's largest view, never smaller than the game, even margins. */
 static void wide_window(int aspect, unsigned fw, unsigned fh, unsigned *w, unsigned *h) {
-  int scale = CW / (int)fw < CH / (int)fh ? CW / (int)fw : CH / (int)fh;
+  const int gw = game_pane_w();
+  int scale = gw / (int)fw < CH / (int)fh ? gw / (int)fw : CH / (int)fh;
   if (aspect == PD_ASPECT_ZOOM_OUT)
     scale--;
   if (scale < 1)
     scale = 1;
-  unsigned x = (unsigned)CW / scale, y = (unsigned)CH / scale;
+  unsigned x = (unsigned)gw / scale, y = (unsigned)CH / scale;
   x = x > PK_WIDE_MAX_VIEW_W ? PK_WIDE_MAX_VIEW_W : x < fw ? fw : x;
   y = y > PK_WIDE_MAX_VIEW_H ? PK_WIDE_MAX_VIEW_H : y < fh ? fh : y;
   *w = x - ((x - fw) & 1);
@@ -844,8 +873,53 @@ static void canvas_for(int fw, int fh, int kind, int *w, int *h) {
   while (kind == CANVAS_MENU && s > 1 && (panelW / s < 320 || panelH / s < 240))
     s--;
   int x = panelW / s, y = panelH / s;
-  *w = x < fw ? fw : x > CANVAS_MAX_W ? CANVAS_MAX_W : x;
-  *h = y < fh ? fh : y > CANVAS_MAX_H ? CANVAS_MAX_H : y;
+  *w = x < fw ? fw : x > OVERLAY_MAX_W ? OVERLAY_MAX_W : x;
+  *h = y < fh ? fh : y > OVERLAY_MAX_H ? OVERLAY_MAX_H : y;
+}
+
+static bool side_active(void) {
+  if (panelW < 800 || panelH < 480)
+    return false;
+  if (settings.layout == PD_LAYOUT_OVERLAY)
+    return false;
+  if (settings.layout == PD_LAYOUT_SIDE_BY_SIDE)
+    return true;
+  return panelW >= 1280 && panelH >= 720 && panelW * 10 >= panelH * 16;
+}
+
+static void side_canvas_size(int *w, int *h) {
+  int d = 1;
+  while (panelW / d > CANVAS_MAX_W || panelH / d > CANVAS_MAX_H)
+    d++;
+  *w = panelW / d;
+  *h = panelH / d;
+}
+
+static void update_pane_geom(void) {
+  if (!sideActive) {
+    leftW = CW;
+    rightW = 0;
+    sideScale = 1;
+    sideLogW = 0;
+    sideLogH = 0;
+    return;
+  }
+  sideScale = (CW >= 1920 && CH >= 960) ? 2 : 1;
+  rightW = PD_UI_WIDTH * sideScale;
+  leftW = CW - rightW;
+  sideLogW = PD_UI_WIDTH;
+  sideLogH = CH / sideScale;
+}
+
+static void read_options(void) {
+  int l = layout_of_opt(pd_option("pokedaisy_layout"));
+  if (lastOptLayout >= 0 && l != lastOptLayout) {
+    settings.layout = l;
+    if (settingsPath[0])
+      pd_settings_save(&settings, settingsPath);
+    hudDrawnKey = 0;
+  }
+  lastOptLayout = l;
 }
 
 static void choose_canvas(void) {
@@ -853,8 +927,8 @@ static void choose_canvas(void) {
   int w = 320, h = 240;
   if (v && sscanf(v, "%dx%d", &w, &h) != 2)
     w = 320, h = 240;
-  CWMAX = w < 320 ? 320 : w > CANVAS_MAX_W ? CANVAS_MAX_W : w;
-  CHMAX = h < 240 ? 240 : h > CANVAS_MAX_H ? CANVAS_MAX_H : h;
+  CWMAX = w < 320 ? 320 : w > OVERLAY_MAX_W ? OVERLAY_MAX_W : w;
+  CHMAX = h < 240 ? 240 : h > OVERLAY_MAX_H ? OVERLAY_MAX_H : h;
   panelW = panelH = 0;
   v = pd_option("pokedaisy_panel");
   if (v && sscanf(v, "%dx%d", &panelW, &panelH) == 2 && panelW > 0 && panelH > 0) {
@@ -862,11 +936,21 @@ static void choose_canvas(void) {
     mgba_retro_get_system_av_info(&av);
     baseGW = (int)av.geometry.base_width;
     baseGH = (int)av.geometry.base_height;
-    canvas_for(baseGW, baseGH, CANVAS_MENU, &CWMAX, &CHMAX); // the menus' is the largest
+    canvas_for(baseGW, baseGH, CANVAS_MENU, &CWMAX, &CHMAX); // the menus' is the largest overlay canvas
+    if (panelW >= 800 && panelH >= 480) {
+      int sw, sh;
+      side_canvas_size(&sw, &sh);
+      if (sw > CWMAX)
+        CWMAX = sw;
+      if (sh > CHMAX)
+        CHMAX = sh;
+    }
   } else
     panelW = panelH = 0;
   CW = CWMAX;
   CH = CHMAX;
+  sideActive = false;
+  update_pane_geom();
 }
 
 /* Which canvas this moment wants. With a known panel: ZOOM OUT (one scale less) while it is the chosen view, and while a
@@ -882,17 +966,27 @@ static int want_canvas(void) {
   return settings.autoZoom && !rewinding && pk_wide_scene() != PK_WIDE_SCENE_FIELD ? CANVAS_EXPAND : CANVAS_ZOOM;
 }
 
-/* Follow the aspect: when the wanted canvas differs, resize it and tell the frontend (it rescales to the new whole factor). */
+/* Follow the layout and aspect: when the wanted canvas differs, resize it and tell the frontend (it rescales to the new whole factor). */
 static void canvas_update(bool notify) {
-  if (!panelW)
+  if (!panelW) {
+    sideActive = false;
+    update_pane_geom();
     return;
+  }
+  const bool side = side_active();
   int w, h;
-  unsigned fw = gameW ? gameW : (unsigned)baseGW, fh = gameH ? gameH : (unsigned)baseGH;
-  canvas_for((int)fw, (int)fh, want_canvas(), &w, &h);
-  if (w == CW && h == CH)
+  if (side)
+    side_canvas_size(&w, &h);
+  else {
+    unsigned fw = gameW ? gameW : (unsigned)baseGW, fh = gameH ? gameH : (unsigned)baseGH;
+    canvas_for((int)fw, (int)fh, want_canvas(), &w, &h);
+  }
+  if (w == CW && h == CH && side == sideActive)
     return;
+  sideActive = side;
   CW = w;
   CH = h;
+  update_pane_geom();
   haveGameFrame = false;
   if (cvs)
     pd_canvas_init(&canvas, CW, CH, cvs);
@@ -954,6 +1048,7 @@ RETRO_API bool retro_load_game(const struct retro_game_info *g) {
   if (!g || !mgba_retro_load_game(g))
     return false;
   PD_BE_AFTER_LOAD(g);
+  lastOptLayout = -1;
   choose_canvas();
   read_options();
   {
@@ -987,6 +1082,8 @@ RETRO_API bool retro_load_game(const struct retro_game_info *g) {
   } else
     snprintf(settingsPath, sizeof settingsPath, "pokedaisy-settings.ini");
   pd_settings_load(&settings, settingsPath);
+  if (lastOptLayout != PD_LAYOUT_AUTO && lastOptLayout >= 0 && lastOptLayout < PD_LAYOUTS)
+    settings.layout = lastOptLayout;
   // A resident frontend loads the core again in the same process: nothing of the last game may survive.
   memset(&snap, 0, sizeof snap);
   memset(&hudState, 0, sizeof hudState);
@@ -1050,6 +1147,7 @@ RETRO_API bool retro_load_game(const struct retro_game_info *g) {
   // The Game Boy games get the HUD where the field scene is known (English Yellow, Crystal: pk_wide_gb), as in the app.
   host.hasHud = PD_BE_IS_GBA() || wideSupported;
   host.hasExpand = true;
+  host.hasLayout = panelW >= 800 && panelH >= 480;
   host.itemCanUse = polishedActions ? polished_potion : NULL;
   host.expandGame = wideSupported;
   host.count = 1;
@@ -1128,10 +1226,14 @@ RETRO_API void retro_unload_game(void) {
   free(out565);
   free(hudPixels);
   free(ovPixels);
+  free(sidePixels);
   ovPixels = NULL;
   cvs = NULL;
   out565 = NULL;
   hudPixels = NULL;
+  sidePixels = NULL;
+  sideCap = 0;
+  sideActive = false;
   haveGame = false;
 }
 
@@ -1204,6 +1306,103 @@ static int hud_hit_at(int x, int y) {
   return -1;
 }
 
+static bool sideTouch;
+static void handle_ui_actions(void) {
+  switch (pd_ui_take_action(&ui)) {
+  case PD_ACTION_ITEM_PICK:
+    if (polishedActions && polished_potion(ui.itemId) && !ui.itemGive) {
+      const char *why = pd_field_input_reason(game.sha1, pd_lr_read_memory, core);
+      bool eligible = false;
+      memset(ui.itemSlots, 0, sizeof ui.itemSlots);
+      for (int i = 0; !why && i < snap.partyCount; i++) {
+        const struct pd_mon *m = &snap.party[i];
+        ui.itemSlots[i].ok = !m->egg && m->hp > 0 && m->hp < m->maxHp;
+        eligible |= ui.itemSlots[i].ok;
+      }
+      if (eligible) {
+        ui.itemPicking = true;
+        ui.itemMoveSlot = -1;
+        focus_new_screen();
+      } else
+        notice(why ? why : "No party member can use a Potion");
+    }
+    break;
+  case PD_ACTION_ITEM_APPLY:
+    if (polishedActions && !pd_field_input_reason(game.sha1, pd_lr_read_memory, core) &&
+        pd_binput_field_start(&polishedInput, PD_FIELD_HEAL, ui.itemId, ui.itemSlot))
+      companion = false;
+    else if (polishedActions)
+      notice("Potion unavailable");
+    break;
+  case PD_ACTION_SETTINGS_CHANGED:
+    pd_settings_save(&settings, settingsPath);
+    hudDrawnKey = 0;
+    break;
+  default:
+    break;
+  }
+}
+
+static void draw_companion_pane(struct pd_canvas *dst, bool drawFocus) {
+  pd_ui_update(&ui, &snap);
+  ui.focusId = drawFocus ? focusId : -1;
+  host.ffOn = false;
+  host.hasState = false;
+  memset(dst->px, 0, (size_t)dst->w * dst->h * sizeof *dst->px);
+  // Use the Dex's compact font throughout the GBC Companion. Restore the cart font for the in-game HUD.
+  const bool gen2 = game.cfg && game.cfg->gb && game.cfg->gb->gen == 2;
+  const struct pd_glyph *glyphs = NULL;
+  int glyphCount = 0;
+  if (gen2) {
+    pd_font_get(&glyphs, &glyphCount);
+    pd_font_set(NULL, 0);
+  }
+  struct pd_canvas saved = canvas;
+  canvas = *dst;
+  pd_ui_draw(&ui, &canvas, &game, &snap, &host);
+  map_cursor_sync(&ui, &game, &snap);
+  if (drawFocus && (ui.tab != PD_TAB_GUIDE || (ui.overlay != PD_OVERLAY_NONE && ui.overlay != PD_OVERLAY_GUIDE_NOTICE))) {
+    const int focus = focus_after_draw(&ui, focus_resolve(&ui));
+    if (ui.overlay != PD_OVERLAY_NONE ||
+        (ui.tab != PD_TAB_SETTINGS && (ui.tab != PD_TAB_PARTY || ui.summarySlot < 0) &&
+         !(ui.tab == PD_TAB_BAG && ui.bagTabs)))
+      focus_draw(&ui, focus);
+  }
+  canvas = saved;
+  if (gen2)
+    pd_font_set(glyphs, glyphCount);
+}
+
+static void blit_sidebar(void) {
+  if (!sideActive || sideLogW <= 0 || sideLogH <= 0)
+    return;
+  size_t need = (size_t)sideLogW * sideLogH;
+  if (need > sideCap) {
+    uint32_t *next = realloc(sidePixels, need * sizeof *sidePixels);
+    if (!next)
+      return;
+    sidePixels = next;
+    sideCap = need;
+  }
+  pd_canvas_init(&sideCanvas, sideLogW, sideLogH, sidePixels);
+  draw_companion_pane(&sideCanvas, companion);
+  for (int y = 0; y < CH && y / sideScale < sideLogH; y++) {
+    const uint32_t *src = sidePixels + (size_t)(y / sideScale) * sideLogW;
+    if (direct565) {
+      uint16_t *dst = out565 + (size_t)y * CW + leftW;
+      for (int x = 0; x < rightW && x / sideScale < sideLogW; x++)
+        dst[x] = to565(src[x / sideScale]);
+    } else {
+      uint32_t *dst = cvs + (size_t)y * CW + leftW;
+      if (sideScale == 1)
+        memcpy(dst, src, (size_t)rightW * sizeof *dst);
+      else
+        for (int x = 0; x < rightW && x / sideScale < sideLogW; x++)
+          dst[x] = src[x / sideScale];
+    }
+  }
+}
+
 RETRO_API void retro_run(void) {
   if (!haveGame) {
     mgba_retro_run();
@@ -1234,13 +1433,32 @@ RETRO_API void retro_run(void) {
   if (inputRunning)
     pressedKeys = 0;
   touch_poll();
-  if (inputRunning)
+  if (inputRunning) {
     touchDown = touchWas = false;
+    sideTouch = false;
+  }
+  if (sideActive && touchDown && !touchWas && touchX >= leftW)
+    sideTouch = true;
+  bool wasSideTouch = sideTouch;
+  if (sideActive && sideLogW > 0 && sideTouch) {
+    if (touchDown) {
+      int sx = (touchX - leftW) / sideScale;
+      int sy = touchY / sideScale;
+      sx = sx < 0 ? 0 : sx >= sideLogW ? sideLogW - 1 : sx;
+      sy = sy < 0 ? 0 : sy >= sideLogH ? sideLogH - 1 : sy;
+      pd_ui_touch(&ui, sx, sy, true);
+    } else if (touchWas) {
+      pd_ui_touch(&ui, 0, 0, false);
+      sideTouch = false;
+    } else
+      sideTouch = false;
+    handle_ui_actions();
+  }
   if (polishedActions && down(quickBtn) && !quickOpen && !companion)
     snapshot();
   // A tap on the quick menu: a tile (or a FLY / REPEL list row) is picked as A picks it; outside, the list or the menu
   // closes as B. On the field, a tap that starts and ends on one HUD part presses it; the game picture itself does nothing.
-  if (touch_tapped() && quickOpen && !companion) {
+  if (touch_tapped() && quickOpen && (!companion || sideActive) && !wasSideTouch && touchX < game_pane_w()) {
     int i = (flyList || repelList) ? quick_list_hit(touchX, touchY) : quick_hit(touchX, touchY);
     if (i >= 0) {
       if (flyList)
@@ -1252,7 +1470,7 @@ RETRO_API void retro_run(void) {
       pressedKeys |= 1u << A;
     } else
       pressedKeys |= 1u << B;
-  } else if (touch_tapped() && !quickOpen && !companion && hudShown) {
+  } else if (touch_tapped() && !quickOpen && !companion && hudShown && !wasSideTouch && touchX < game_pane_w()) {
     int id = hud_hit_at(touchX0, touchY0);
     if (id >= 0 && id == hud_hit_at(touchX, touchY)) {
       hudFocus = false;
@@ -1388,7 +1606,7 @@ RETRO_API void retro_run(void) {
   } else if (quickOpen) {
     int dx = down(RIGHT) - down(LEFT), dy = down(DOWN) - down(UP);
     if (dx || dy)
-      quickSel = quick_step(quickN, quickSel, dx, dy, CW, CH);
+      quickSel = quick_step(quickN, quickSel, dx, dy, game_pane_w(), CH);
     if (down(A) && !quick[quickSel].why && quick[quickSel].action == QUICK_FLY) {
       if (polishedActions) {
         quickOpen = false;
@@ -1462,10 +1680,12 @@ RETRO_API void retro_run(void) {
     if (ui.tab != PD_TAB_BAG || ui.overlay != PD_OVERLAY_NONE)
       ui.bagTabs = false; // the pocket tab bar's cursor lives only on the bag
     // The finger over the companion, as the 3DS's stylus: down every frame it's held (drags scroll), then up.
-    if (touchDown)
-      pd_ui_touch(&ui, touchX, touchY, true);
-    else if (touchWas)
-      pd_ui_touch(&ui, 0, 0, false);
+    if (!sideActive) {
+      if (touchDown)
+        pd_ui_touch(&ui, touchX, touchY, true);
+      else if (touchWas)
+        pd_ui_touch(&ui, 0, 0, false);
+    }
     const bool backing = down(B);
     const bool shoulder = down(L) || down(R);
     bool closeMap = false;
@@ -1581,39 +1801,7 @@ RETRO_API void retro_run(void) {
         }
       }
     }
-    switch (pd_ui_take_action(&ui)) {
-    case PD_ACTION_ITEM_PICK:
-      if (polishedActions && polished_potion(ui.itemId) && !ui.itemGive) {
-        const char *why = pd_field_input_reason(game.sha1, pd_lr_read_memory, core);
-        bool eligible = false;
-        memset(ui.itemSlots, 0, sizeof ui.itemSlots);
-        for (int i = 0; !why && i < snap.partyCount; i++) {
-          const struct pd_mon *m = &snap.party[i];
-          ui.itemSlots[i].ok = !m->egg && m->hp > 0 && m->hp < m->maxHp;
-          eligible |= ui.itemSlots[i].ok;
-        }
-        if (eligible) {
-          ui.itemPicking = true;
-          ui.itemMoveSlot = -1;
-          focus_new_screen();
-        } else
-          notice(why ? why : "No party member can use a Potion");
-      }
-      break;
-    case PD_ACTION_ITEM_APPLY:
-      if (polishedActions && !pd_field_input_reason(game.sha1, pd_lr_read_memory, core) &&
-          pd_binput_field_start(&polishedInput, PD_FIELD_HEAL, ui.itemId, ui.itemSlot))
-        companion = false;
-      else if (polishedActions)
-        notice("Potion unavailable");
-      break;
-    case PD_ACTION_SETTINGS_CHANGED:
-      pd_settings_save(&settings, settingsPath);
-      hudDrawnKey = 0;
-      break;
-    default:
-      break;
-    }
+    handle_ui_actions();
   }
 
   canvas_update(true);
@@ -1637,11 +1825,11 @@ RETRO_API void retro_run(void) {
   }
   if (polishedActions && companion && pd_binput_busy(&polishedInput))
     companion = false; // The native battle / Bag / party resumes with the selected action.
-  bool paused = companion || hudFocus || (quickOpen && !flyAsk);
+  bool paused = (!sideActive && companion) || hudFocus || (quickOpen && !flyAsk);
   const bool expanded = wideSupported && settings.aspect != PD_ASPECT_ORIGINAL;
   const bool repeat = late && canDupe && haveGameFrame && !paused && !quickOpen &&
                       (!ff || (expanded && !repeatedFrame));
-  maskGame = paused;
+  maskGame = companion || hudFocus || quickOpen;
   shortcutExclusive = false;
   if (!paused) {
     if (polishedActions && !rewinding && settings.wildOff &&
@@ -1698,7 +1886,7 @@ RETRO_API void retro_run(void) {
     PD_BE_AUDIO(silence, 549);
   }
 
-  if (!snap.valid || (companion && !wasCompanion) || (!companion && frames % 30 == 0))
+  if (!snap.valid || (companion && !wasCompanion) || (sideActive && frames % 10 == 0) || (!companion && frames % 30 == 0))
     snapshot();
   companionWas = companion;
   frames++;
@@ -1823,78 +2011,60 @@ RETRO_API void retro_run(void) {
     return;
   }
   PF_T(td0);
-  if (companion) {
-    pd_ui_update(&ui, &snap);
-    ui.focusId = focusId;
-    host.ffOn = false;
-    host.hasState = false;
-    memset(cvs, 0, (size_t)CW * CH * sizeof *cvs);
-    // Use the Dex's compact font throughout the GBC Companion. Restore the cart font for the in-game HUD.
-    const bool gen2 = game.cfg && game.cfg->gb && game.cfg->gb->gen == 2;
-    const struct pd_glyph *glyphs = NULL;
-    int glyphCount = 0;
-    if (gen2) {
-      pd_font_get(&glyphs, &glyphCount);
-      pd_font_set(NULL, 0);
-    }
-    pd_ui_draw(&ui, &canvas, &game, &snap, &host);
-    if (gen2)
-      pd_font_set(glyphs, glyphCount);
-    map_cursor_sync(&ui, &game, &snap);
-    if (ui.tab != PD_TAB_GUIDE || (ui.overlay != PD_OVERLAY_NONE && ui.overlay != PD_OVERLAY_GUIDE_NOTICE)) {
-      const int focus = focus_after_draw(&ui, focus_resolve(&ui));
-      if (ui.overlay != PD_OVERLAY_NONE ||
-          (ui.tab != PD_TAB_SETTINGS && (ui.tab != PD_TAB_PARTY || ui.summarySlot < 0) &&
-           !(ui.tab == PD_TAB_BAG && ui.bagTabs)))
-        focus_draw(&ui, focus);
-    }
-  } else if (quickOpen && ovPixels) {
-    if (polishedActions && wideReady && settings.aspect != PD_ASPECT_ORIGINAL)
-      draw_wide_quick_background();
-    else
-      draw_game();
-    dim(0x55);
-    struct pd_canvas qc;
-    pd_canvas_init(&qc, CW, CH, ovPixels);
-    const char *const *rows = flyList ? flyNames : repelList ? repelNames : NULL;
-    bool drawn = true;
-    if (rows)
-      quick_list_draw(&qc, flyList ? "FLY" : "REPEL", rows, flyList ? flyT.count : repelKindCount, flyList ? flySel : repelSel, settings.hudLook);
-    else
-      drawn = quick_draw(&qc, &game, quick, quickN, quickSel, settings.hudLook);
-    if (drawn) {
-      quick_finish(&qc);
-      blend_overlay(ovPixels, CW, CH, 1, 0, 0);
-    }
+  if (!sideActive && companion) {
+    draw_companion_pane(&canvas, true);
   } else {
-    direct565 = messageFrames == 0;
-    if (direct565)
-      draw_game_fast();
-    else
-      draw_game();
-    bool gb = PD_BE_IS_GB();
-    bool field = gb ? wideSupported && pk_wide_scene() == PK_WIDE_SCENE_FIELD && !snap.inBattle && flyStage == 0
-                    : (fieldFlags & PK_FIELD_KNOWN) && !(fieldFlags & (PK_FIELD_LOCKED | PK_FIELD_BATTLE)) &&
-                          (!wideSupported || pk_wide_scene() == PK_WIDE_SCENE_FIELD) && flyStage == 0;
-    hudFieldFrames = field ? hudFieldFrames + 1 : 0;
-    if (settings.hud && game.cfg && host.hasHud && hudFieldFrames >= 20) {
-      int steps = polishedActions ? polished_byte(PD_PC_REPEL_STEPS) : gb ? 0 : repel_steps(core, game.cfg);
-      if (steps <= 0)
-        hudState.repelFull = 0;
-      else if (!hudState.repelFull || steps > hudState.repelFull)
-        hudState.repelFull = hud_repel_full(steps);
-      hudState.repel = steps > 0 ? steps : 0;
-      hudState.repelItem = polishedActions ? pd_pc_repels[0].id : 0;
-      hudState.pc = pcOk || gbf || polishedActions;
-      hudState.wild = hud_wild_uncaught(&game, &snap);
-      draw_hud();
-    } else
-      hudShown = false;
+    const int gw = game_pane_w();
+    if (quickOpen && ovPixels) {
+      if (polishedActions && wideReady && settings.aspect != PD_ASPECT_ORIGINAL)
+        draw_wide_quick_background();
+      else
+        draw_game();
+      dim(0x55, gw);
+      struct pd_canvas qc;
+      pd_canvas_init(&qc, gw, CH, ovPixels);
+      const char *const *rows = flyList ? flyNames : repelList ? repelNames : NULL;
+      bool drawn = true;
+      if (rows)
+        quick_list_draw(&qc, flyList ? "FLY" : "REPEL", rows, flyList ? flyT.count : repelKindCount, flyList ? flySel : repelSel, settings.hudLook);
+      else
+        drawn = quick_draw(&qc, &game, quick, quickN, quickSel, settings.hudLook);
+      if (drawn) {
+        quick_finish(&qc);
+        blend_overlay(ovPixels, gw, CH, 1, 0, 0);
+      }
+    } else {
+      direct565 = messageFrames == 0;
+      if (direct565)
+        draw_game_fast();
+      else
+        draw_game();
+      bool gb = PD_BE_IS_GB();
+      bool field = gb ? wideSupported && pk_wide_scene() == PK_WIDE_SCENE_FIELD && !snap.inBattle && flyStage == 0
+                      : (fieldFlags & PK_FIELD_KNOWN) && !(fieldFlags & (PK_FIELD_LOCKED | PK_FIELD_BATTLE)) &&
+                            (!wideSupported || pk_wide_scene() == PK_WIDE_SCENE_FIELD) && flyStage == 0;
+      hudFieldFrames = field ? hudFieldFrames + 1 : 0;
+      if (settings.hud && game.cfg && host.hasHud && hudFieldFrames >= 20) {
+        int steps = polishedActions ? polished_byte(PD_PC_REPEL_STEPS) : gb ? 0 : repel_steps(core, game.cfg);
+        if (steps <= 0)
+          hudState.repelFull = 0;
+        else if (!hudState.repelFull || steps > hudState.repelFull)
+          hudState.repelFull = hud_repel_full(steps);
+        hudState.repel = steps > 0 ? steps : 0;
+        hudState.repelItem = polishedActions ? pd_pc_repels[0].id : 0;
+        hudState.pc = pcOk || gbf || polishedActions;
+        hudState.wild = hud_wild_uncaught(&game, &snap);
+        draw_hud();
+      } else
+        hudShown = false;
+    }
+    if (sideActive)
+      blit_sidebar();
   }
   PF_T(td1);
   pf_add(PF_DRAW, td1 - td0);
   present();
-  haveGameFrame = !companion && !quickOpen && !hudFocus;
+  haveGameFrame = !paused && !quickOpen && !hudFocus;
   PF_T(td2);
   pf_add(PF_PRESENT, td2 - td1);
   pf_add(PF_TOTAL, td2 - t0);

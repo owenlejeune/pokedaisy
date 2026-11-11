@@ -113,6 +113,7 @@ bool pd_settings_load(struct pd_settings* s, const char* path) {
         else if (!strcmp(key, "hudbtn")) int_in(value, 0, PD_BUTTONS - 1, &s->hudBtn);
         else if (!strcmp(key, "speed")) int_in(value, 0, PD_GAME_SPEED_COUNT - 1, &s->gameSpeed);
         else if (!strcmp(key, "volume")) int_in(value, 20, 100, &s->gameVolume);
+        else if (!strcmp(key, "layout")) int_in(value, 0, PD_LAYOUTS - 1, &s->layout);
         else if (!strcmp(key, "save_dir")) snprintf(s->saveDir, sizeof(s->saveDir), "%s", value);
         else if (!strcmp(key, "state_dir")) snprintf(s->stateDir, sizeof(s->stateDir), "%s", value);
         else {
@@ -142,8 +143,8 @@ bool pd_settings_save(const struct pd_settings* s, const char* path) {
             s->rewind ? 1 : 0, s->runIndoors ? 1 : 0);
     fprintf(f, "quickbtn=%d\ncompanionbtn=%d\nhudbtn=%d\n", s->quickBtn, s->companionBtn, s->hudBtn);
     fprintf(f, "dark=%d\ntheme=%d\nffnormal=%d\ncheats=%d\n", s->darkMode, s->theme, s->ffNormal, s->cheats);
-    fprintf(f, "speed=%d\nvolume=%d\nnohints=%d\nonetap=%d\nmute=%d\nautorun=%d\nperf=%d\n", s->gameSpeed,
-            s->gameVolume, s->hideHints, s->oneTapMoves, s->gameMuted, s->autoRun, s->showPerf ? 1 : 0);
+    fprintf(f, "speed=%d\nvolume=%d\nnohints=%d\nonetap=%d\nmute=%d\nautorun=%d\nperf=%d\nlayout=%d\n", s->gameSpeed,
+            s->gameVolume, s->hideHints, s->oneTapMoves, s->gameMuted, s->autoRun, s->showPerf ? 1 : 0, s->layout);
     if (s->saveDir[0]) fprintf(f, "save_dir=%s\n", s->saveDir);
     if (s->stateDir[0]) fprintf(f, "state_dir=%s\n", s->stateDir);
     if (fclose(f) != 0) return false;

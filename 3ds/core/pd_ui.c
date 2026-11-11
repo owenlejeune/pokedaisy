@@ -591,6 +591,9 @@ static void act(struct pd_ui* ui, int id) {
     } else if (id == HIT_SETTING + SETTING_FILTER) {
         ui->settings->lcdFilter = !ui->settings->lcdFilter;
         ui->action = PD_ACTION_SETTINGS_CHANGED;
+    } else if (id == HIT_SETTING + SETTING_LAYOUT) {
+        ui->settings->layout = (ui->settings->layout + 1) % PD_LAYOUTS;
+        ui->action = PD_ACTION_SETTINGS_CHANGED;
     } else if (id == HIT_SETTING + SETTING_QUICK_MENU) {
         ui->settings->quickGrid = !ui->settings->quickGrid;
         ui->action = PD_ACTION_SETTINGS_CHANGED;

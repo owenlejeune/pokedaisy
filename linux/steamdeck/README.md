@@ -19,15 +19,14 @@ By default, standalone mode uses XDG paths (`~/.local/share/pokedaisy/`, `~/.con
 - Add `/home/deck/Applications/pokedaisy.AppImage` as a Non-Steam Game.
 - Recommended Launch Options: `--fullscreen` (add `"<rom-path>"` to boot directly into a game, or omit to open the built-in ROM picker).
 - Optional Steam Grid artwork (`grid-vertical.png`, `grid-horizontal.png`, `hero.png`, `logo.png`) is in [`artwork/`](artwork/) (and in `steam-grid/` inside `PokeDaisy.AppDir` / `--appimage-extract`).
-- **Display:** On `1280x800` (`SETTINGS > LAYOUT: AUTO`), the game renders at 4x on the left (`960x800` pane) and the live companion sidebar stays visible on the right (`320x800`).
-- **Touch & Trackpad:** Tap or drag directly on the sidebar tabs/buttons.
+- **Display:** On `1280x800` (`LAYOUT: AUTO`), the game renders on the left (`960x800` pane, 4x GBA `960x640` ORIGINAL or `960x800` EXPAND) and the live companion sidebar stays visible on the right (`320x800`). Toggle anytime between `AUTO`, `SIDE BY SIDE`, and `OVERLAY` in Companion (`X`) -> **SETTINGS > LAYOUT**, in the host menu (`Select + Start`) -> **LAYOUT**, or via `--layout side-by-side|overlay|auto`.
+- **Touch & Trackpad:** Tap or drag directly on the live sidebar (`x >= 960` on `1280x800`) even while the game keeps running.
 - **Deck Controls (`Gamepad` template):**
-  - `L4` (`PADDLE2`): Toggle controller focus between game and companion sidebar (`X` / `Tab`)
-  - `R4` (`PADDLE1`): Toggle fast-forward
-  - `R5` (`PADDLE3`): Open Quick Menu (`Y` / `F`)
-  - `L5` (`PADDLE4`): Save state (`Select + L5` loads state)
-  - `Select + Start`: Pause menu
-  - `SETTINGS > FACE BUTTONS`: Switch between `NINTENDO` (`East=A`, default) and `XBOX` (`South=A`).
+  - `Select + Start`: Host pause menu (**LAYOUT**, **A/B BUTTONS**, **HOTKEYS**, **REWIND**, **FF SPEED**, **LCD FILTER**, **SAVE/LOAD STATE**)
+  - `X` (`Tab`): Toggle controller focus between game and companion sidebar (or open/close companion in `OVERLAY` mode)
+  - `Y` (`F`): Open Quick Menu
+  - `A/B BUTTONS`: Cycle between `NORMAL` (`Nintendo` layout) and `SWAPPED` (`Xbox` layout) in the `Select + Start` menu.
+  - Back paddles (when not rebound in `Select + Start` -> `HOTKEYS`): `PADDLE 1` fast-forward (hold), `PADDLE 2` companion/sidebar toggle (`X`), `PADDLE 3` Quick Menu (`Y`), `PADDLE 4` save state (`Select + PADDLE 4` loads state).
 
 ## 3. RetroDECK (ES-DE Custom System)
 
@@ -53,11 +52,13 @@ Configure Tender's custom GBA runner to invoke PokeDaisy with Tender's managed s
 ```
 
 Notes for Tender compatibility:
-- **Flush-on-write:** PokeDaisy calls `pocket_save_flush()` (`msync(MS_SYNC)` + `fsync()`) as soon as an in-game save completes (`dirty` `1 -> 0`), as well as on pause, state save, and exit, so `inotify` sees updated `.sav` bytes without waiting for ROM unload.
+- **Flush-on-write:** PokeDaisy checks SRAM every ~0.5s (30 frames) and writes atomically with `fsync()` via `sram_write()`, as well as immediately on pause (`Select + Start`), state save, and exit, so `inotify` sees updated `.sav` bytes without waiting for ROM unload.
 - **`.srm` saves:** Defaults to `.sav`. Pass `--save-ext srm` to always use `.srm`; if omitted and `<stem>.sav` is missing while `<stem>.srm` already exists in `--save-dir`, PokeDaisy opens the existing `.srm` automatically.
 - **Persistent config / env:** Instead of passing `--save-dir` each time, you can set `POKEDAISY_SAVE_DIR=<tender_save_dir>` or `save_dir=<tender_save_dir>` in `~/.config/pokedaisy/settings.ini`.
 
-## 5. Libretro Core Option (`pokedaisy_libretro.so`)
+## 5. Libretro Core Options (`pokedaisy_gba_libretro.so` / `pokedaisy_gbc_libretro.so`)
 
-If running `pokedaisy_libretro.so` directly inside RetroDECK/RetroArch instead of the standalone AppImage, open **Core Options** and set **Panel size (`pokedaisy_panel`)** to `1280x800` for native Steam Deck integer scaling.
+If running `pokedaisy_gba_libretro.so` or `pokedaisy_gbc_libretro.so` directly inside RetroDECK/RetroArch instead of the standalone AppImage, open **Core Options** and set:
+- **Panel size (`pokedaisy_panel`)**: `1280x800` for native Steam Deck scaling and automatic 2-pane side-by-side mode.
+- **Companion layout (`pokedaisy_layout`)**: `auto`, `side-by-side`, or `overlay`.
 

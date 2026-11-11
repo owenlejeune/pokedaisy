@@ -133,7 +133,7 @@ static void test_cascading_precedence_and_retrodeck(void) {
   assert(pocket_parse_cli(2, argvBase, &cli));
   assert(pocket_resolve_base(&cli, &paths));
   assert(pocket_resolve_storage(&cli, &paths, "~/cfg-saves", "~/cfg-states"));
-  char expected[1024];
+  char expected[1200];
   snprintf(expected, sizeof expected, "%s/cfg-saves", home);
   assert(strcmp(paths.savesDir, expected) == 0);
   snprintf(expected, sizeof expected, "%s/cfg-states", home);
@@ -254,7 +254,7 @@ static void test_save_ext_and_srm_fallback(void) {
   char *dir = mkdtemp(tmpl);
   assert(dir);
 
-  char saveDir[1024], stateDir[1024], srmFile[1024], savFile[1024], sav[1024], ss[1024];
+  char saveDir[1024], stateDir[1024], srmFile[1200], savFile[1200], sav[1024], ss[1024];
   snprintf(saveDir, sizeof saveDir, "%s/saves", dir);
   snprintf(stateDir, sizeof stateDir, "%s/states", dir);
   assert(pocket_mkdir_p(saveDir, 0755));

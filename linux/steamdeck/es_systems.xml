@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<!--
+  RetroDECK ES-DE custom system entry for PokeDaisy standalone AppImage.
+  Copy or merge into ~/retrodeck/ES-DE/custom_systems/es_systems.xml
+  (or ~/.var/app/net.retrodeck.retrodeck/config/ES-DE/custom_systems/es_systems.xml).
+
+  mGBA is built with USE_LIBZIP=OFF, so extensions are restricted to uncompressed
+  ROMs (.gba). If your ROMs are inside .zip or .7z archives, use
+  pokedaisy-esde-wrapper.sh instead of calling the AppImage directly.
+-->
+<systemList>
+  <system>
+    <name>gba</name>
+    <fullname>Nintendo Game Boy Advance</fullname>
+    <path>%ROMPATH%/gba</path>
+    <extension>.gba .GBA</extension>
+    <command label="PokeDaisy (Standalone)">flatpak-spawn --host /home/deck/Applications/pokedaisy.AppImage --retrodeck --fullscreen "%ROM%"</command>
+    <platform>gba</platform>
+    <theme>gba</theme>
+  </system>
+</systemList>
+

@@ -153,3 +153,8 @@ ROM extension in the name), or pass its path with `--save`.
 
 The older opt-in DSperate experiment is still available with `-DPOCKET_DSPERATE=ON`. See
 [dsperate/README.md](dsperate/README.md) for that backend's build and save paths.
+
+## Steam Deck (RetroDECK & Tender)
+
+See [steamdeck/README.md](steamdeck/README.md) and the RetroDECK ES-DE custom
+system templates in `linux/steamdeck/`.

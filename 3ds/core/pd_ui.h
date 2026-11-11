@@ -101,6 +101,8 @@ struct pd_settings {
     bool ffNormal;   // FF MODE: NORMAL; off = SMART, 1x while the game waits for the player
     bool cheats;     // CHEATS: the game's file's codes on
     int theme;       // THEME: a pd_themes[] id
+    char saveDir[512];  // Optional host override (settings.ini save_dir=), preserved on save
+    char stateDir[512]; // Optional host override (settings.ini state_dir=), preserved on save
 };
 
 enum pd_button { PD_BTN_X, PD_BTN_Y, PD_BTN_L2, PD_BTN_R2, PD_BTN_NONE, PD_BUTTONS };

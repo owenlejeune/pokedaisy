@@ -5,6 +5,7 @@
 #include <string.h>
 
 void pd_settings_defaults(struct pd_settings* s) {
+    memset(s, 0, sizeof(*s));
     s->screenMode = PD_SCREEN_SHARP;
     s->ffSpeed = PD_FF_MIN;
     s->guideNotice = 0;
@@ -36,6 +37,8 @@ void pd_settings_defaults(struct pd_settings* s) {
     s->ffNormal = false;
     s->cheats = false;
     s->theme = 8; // POKéDAISY
+    s->saveDir[0] = 0;
+    s->stateDir[0] = 0;
 }
 
 const int PD_FF_SPEEDS[PD_FF_CHOICES] = {2, 3, 4, 5, 6, 8, 10, 0};
@@ -58,8 +61,9 @@ bool pd_settings_load(struct pd_settings* s, const char* path) {
     pd_settings_defaults(s);
     FILE* f = fopen(path, "r");
     if (!f) return false;
-    char line[128];
+    char line[600];
     while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = 0;
         char* eq = strchr(line, '=');
         if (!eq) continue;
         *eq = 0;
@@ -109,6 +113,8 @@ bool pd_settings_load(struct pd_settings* s, const char* path) {
         else if (!strcmp(key, "hudbtn")) int_in(value, 0, PD_BUTTONS - 1, &s->hudBtn);
         else if (!strcmp(key, "speed")) int_in(value, 0, PD_GAME_SPEED_COUNT - 1, &s->gameSpeed);
         else if (!strcmp(key, "volume")) int_in(value, 20, 100, &s->gameVolume);
+        else if (!strcmp(key, "save_dir")) snprintf(s->saveDir, sizeof(s->saveDir), "%s", value);
+        else if (!strcmp(key, "state_dir")) snprintf(s->stateDir, sizeof(s->stateDir), "%s", value);
         else {
             int on;
             bool* b = !strcmp(key, "ffaudio") ? &s->ffAudio : !strcmp(key, "rewind") ? &s->rewind
@@ -138,6 +144,8 @@ bool pd_settings_save(const struct pd_settings* s, const char* path) {
     fprintf(f, "dark=%d\ntheme=%d\nffnormal=%d\ncheats=%d\n", s->darkMode, s->theme, s->ffNormal, s->cheats);
     fprintf(f, "speed=%d\nvolume=%d\nnohints=%d\nonetap=%d\nmute=%d\nautorun=%d\nperf=%d\n", s->gameSpeed,
             s->gameVolume, s->hideHints, s->oneTapMoves, s->gameMuted, s->autoRun, s->showPerf ? 1 : 0);
+    if (s->saveDir[0]) fprintf(f, "save_dir=%s\n", s->saveDir);
+    if (s->stateDir[0]) fprintf(f, "state_dir=%s\n", s->stateDir);
     if (fclose(f) != 0) return false;
     return rename(tmp, path) == 0;
 }

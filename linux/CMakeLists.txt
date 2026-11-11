@@ -15,7 +15,7 @@ find_path(SDL2_INCLUDE_DIR SDL.h PATH_SUFFIXES SDL2 REQUIRED)
 find_library(SDL2_LIBRARY NAMES SDL2 REQUIRED)
 find_package(Threads REQUIRED)
 file(GLOB PD_CORE CONFIGURE_DEPENDS ../3ds/core/*.c)
-add_library(pd_linux_common STATIC host_io.c wild.c fly.c field_items.c hud.c quick_menu.c ${PD_CORE} ../3ds/desktop/pd_png.c ../app/src/main/cpp/pk_savevf.c
+add_library(pd_linux_common STATIC host_io.c host_paths.c wild.c fly.c field_items.c hud.c quick_menu.c ${PD_CORE} ../3ds/desktop/pd_png.c ../app/src/main/cpp/pk_savevf.c
   ../app/src/main/cpp/pk_call.c ../app/src/main/cpp/pk_host.c ../app/src/main/cpp/pk_wide.c ../app/src/main/cpp/pk_wide_gb.c
   ../app/src/main/cpp/pk_rewind.c)
 target_include_directories(pd_linux_common PUBLIC ../3ds/core ../third_party/mgba/include ${CMAKE_CURRENT_BINARY_DIR}/mgba/include ${SDL2_INCLUDE_DIR})
@@ -27,7 +27,7 @@ set_source_files_properties(../app/src/main/cpp/pk_wide.c ../app/src/main/cpp/pk
 target_link_libraries(pd_linux_common PUBLIC mgba ${SDL2_LIBRARY} m Threads::Threads ${CMAKE_DL_LIBS})
 # The executable is a libretro frontend: it loads pokedaisy_gba / pokedaisy_gbc / pokedaisy_ds from beside itself and links no
 # emulator, only SDL2 and the portable canvas for its menus (3ds/core).
-add_library(pd_host_ui STATIC ${PD_CORE} ../3ds/desktop/pd_png.c)
+add_library(pd_host_ui STATIC host_paths.c ${PD_CORE} ../3ds/desktop/pd_png.c)
 target_include_directories(pd_host_ui PUBLIC ../3ds/core)
 target_compile_definitions(pd_host_ui PUBLIC _GNU_SOURCE)
 add_executable(pokedaisy-linux main.c)
@@ -44,8 +44,9 @@ if(POCKET_DSPERATE)
 endif()
 if(BUILD_TESTING)
   add_executable(linux-io-test test_host_io.c)
+  add_executable(linux-paths-test test_host_paths.c)
   add_executable(linux-wild-test test_wild.c)
-  foreach(test linux-io-test linux-wild-test)
+  foreach(test linux-io-test linux-paths-test linux-wild-test)
     target_compile_options(${test} PRIVATE -UNDEBUG -Wall -Wextra -Werror)
     target_link_libraries(${test} PRIVATE pd_linux_common)
     add_test(NAME ${test} COMMAND ${test})

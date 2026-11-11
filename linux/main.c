@@ -6,6 +6,8 @@
  * rewind, the LCD mask and the game list. */
 #include "libretro.h"
 #include "../3ds/desktop/pd_png.h"
+#include "host_paths.h"
+#include "pd_settings.h"
 #include "display_filter.h"
 #include "pd_canvas.h"
 #include "pd_menu.h"
@@ -38,11 +40,9 @@ static SDL_Renderer *renderer;
 static SDL_AudioDeviceID audio;
 static volatile sig_atomic_t running = 1;
 static int appError;
-static const char *root = ".";
-/* plorpOS: --save FILE, the battery save another emulator keeps (its backups then go to DATA/backups);
- * NULL = DATA/saves/ROM.sav. */
-static const char *saveFile;
-static char savesDir[PATH_MAX], exeDir[PATH_MAX];
+static char exeDir[PATH_MAX];
+static struct pocket_cli cli;
+static struct pocket_paths paths;
 static char message[128];
 static unsigned messageUntil;
 
@@ -763,10 +763,10 @@ static bool environment(unsigned cmd, void *data) {
     return true;
   }
   case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY:
-    *(const char **)data = savesDir;
+    *(const char **)data = paths.savesDir;
     return true;
   case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
-    *(const char **)data = root;
+    *(const char **)data = paths.dataDir;
     return true;
   case RETRO_ENVIRONMENT_SET_GEOMETRY:
     av.geometry = *(const struct retro_game_geometry *)data;
@@ -1328,14 +1328,14 @@ static void sram_write(const char *sav, struct save_baseline *copy, bool sync) {
 // The settings the old host kept in DATA/settings.ini become the core's (SAVES/pokedaisy/settings.ini), once.
 static void settings_migrate(void) {
   char from[PATH_MAX + 16], dir[PATH_MAX + 16], to[PATH_MAX + 32];
-  snprintf(from, sizeof from, "%s/settings.ini", root);
-  snprintf(dir, sizeof dir, "%s/pokedaisy", savesDir);
+  snprintf(from, sizeof from, "%s/settings.ini", paths.dataDir);
+  snprintf(dir, sizeof dir, "%s/pokedaisy", paths.savesDir);
   snprintf(to, sizeof to, "%s/settings.ini", dir);
   size_t n;
   unsigned char *d = exists(to) ? NULL : read_file(from, &n, 1u << 20);
   if (!d)
     return;
-  mkdir(dir, 0755);
+  pocket_mkdir_p(dir, 0755);
   if (write_file(to, d, n, false))
     fprintf(stderr, "Settings moved from %s to %s\n", from, to);
   free(d);
@@ -1364,7 +1364,7 @@ static void run_game(const char *path, int maxFrames, const char *shot, bool fro
       SDL_CloseAudioDevice(audio);
       audio = 0;
     }
-    appError = pd_ds_run(path, root, maxFrames, shot, renderer, ds_running);
+    appError = pd_ds_run(path, paths.dataDir, maxFrames, shot, renderer, ds_running);
     // The DS backend owns its device while running; the GB / GBA games get theirs back.
     audio_open();
     audioLost = !audio;
@@ -1392,24 +1392,28 @@ static void run_game(const char *path, int maxFrames, const char *shot, bool fro
     notice("Cannot read ROM");
     return;
   }
-  const char *name = strrchr(path, '/');
-  name = name ? name + 1 : path;
   char sav[PATH_MAX * 2], ss[PATH_MAX * 2], backups[PATH_MAX * 2];
-  if (saveFile) {
-    snprintf(sav, sizeof sav, "%s", saveFile);
-    snprintf(backups, sizeof backups, "%s/backups", root);
-  } else {
-    snprintf(sav, sizeof sav, "%s/%s.sav", savesDir, name);
-    snprintf(backups, sizeof backups, "%s/pokedaisy-backups", savesDir);
+  if (!pocket_game_save_path(&cli, &paths, path, sav, sizeof sav, ss, sizeof ss)) {
+    free(rom);
+    dlclose(core.dl);
+    appError = 1;
+    notice("Save path too long");
+    return;
   }
+  if (paths.isolateBackups)
+    snprintf(backups, sizeof backups, "%s", paths.backupsDir);
+  else
+    snprintf(backups, sizeof backups, "%s/pokedaisy-backups", paths.savesDir);
   // DS uses L2 for the Companion and R2 for screen switching. Keep the host's DS bindings separate.
   int *hotkeys = !strcmp(coreName, "pokedaisy_ds_libretro.so") ? hostSet.dsHotkey : hostSet.hotkey;
   // armGBA's states aren't mGBA's: each core its own file.
-  snprintf(ss, sizeof ss, "%s/states/%s%s.ss", root, name, strstr(coreName, "_gba_") ? ".armgba" : "");
   if (strstr(coreName, "_gba_")) {
+    char old[PATH_MAX * 2];
+    snprintf(old, sizeof old, "%s", ss);
+    size_t len = strlen(ss);
+    if (len >= 3 && !strcmp(ss + len - 3, ".ss") && len + 7 < sizeof ss)
+      snprintf(ss + len - 3, sizeof ss - (len - 3), ".armgba.ss");
     // A GBA state from before armGBA is mGBA's: it can't load here, so say so instead of "No state saved yet".
-    char old[PATH_MAX * 2 + 16];
-    snprintf(old, sizeof old, "%s/states/%s.ss", root, name);
     if (exists(old) && !exists(ss))
       notice("Your older save state doesn't load in this version");
   }
@@ -1738,33 +1742,40 @@ static void exe_dir(const char *argv0) {
   snprintf(exeDir, sizeof exeDir, "%s", p);
 }
 int main(int argc, char **argv) {
-  const char *rom = NULL, *shot = NULL;
-  int frames = 0;
-  for (int i = 1; i < argc; i++) {
-    if (!strcmp(argv[i], "--data") && i + 1 < argc)
-      root = argv[++i];
-    else if (!strcmp(argv[i], "--save") && i + 1 < argc)
-      saveFile = argv[++i];
-    else if (!strcmp(argv[i], "--frames") && i + 1 < argc)
-      frames = atoi(argv[++i]);
-    else if (!strcmp(argv[i], "--shot") && i + 1 < argc)
-      shot = argv[++i];
-    else
-      rom = argv[i];
+  if (!pocket_parse_cli(argc, argv, &cli)) {
+    pocket_print_usage(argv[0], stderr);
+    return 1;
+  }
+  if (cli.showHelp) {
+    pocket_print_usage(argv[0], stdout);
+    return 0;
+  }
+  if (cli.showVersion) {
+    puts("PokeDaisy Linux");
+    return 0;
+  }
+  if (!pocket_resolve_base(&cli, &paths)) {
+    fprintf(stderr, "Failed to resolve host base paths\n");
+    return 1;
+  }
+  pocket_mkdir_p(paths.configDir, 0755);
+  struct pd_settings bootSettings;
+  pd_settings_load(&bootSettings, paths.configFile);
+  if (!pocket_resolve_storage(&cli, &paths, bootSettings.saveDir, bootSettings.stateDir)) {
+    fprintf(stderr, "Failed to resolve save/state paths\n");
+    return 1;
   }
   exe_dir(argv[0]);
   signal(SIGINT, stop);
   signal(SIGTERM, stop);
   signal(SIGHUP, stop); // a closed terminal or session: the save goes to the card like a quit
-  mkdir(root, 0755);
-  char path[PATH_MAX * 2];
-  const char *dirs[] = {"roms", "saves", "states"};
-  for (int i = 0; i < 3; i++) {
-    snprintf(path, sizeof path, "%s/%s", root, dirs[i]);
-    mkdir(path, 0755);
-  }
-  snprintf(savesDir, sizeof savesDir, "%s/saves", root);
-  snprintf(hostIni, sizeof hostIni, "%s/host.ini", root);
+  pocket_mkdir_p(paths.dataDir, 0755);
+  pocket_mkdir_p(paths.romsDir, 0755);
+  pocket_mkdir_p(paths.savesDir, 0755);
+  pocket_mkdir_p(paths.statesDir, 0755);
+  if (paths.isolateBackups)
+    pocket_mkdir_p(paths.backupsDir, 0755);
+  snprintf(hostIni, sizeof hostIni, "%s/host.ini", paths.configDir);
   host_load();
   comboMenu = !(getenv("POCKET_MENU_COMBO") && !strcmp(getenv("POCKET_MENU_COMBO"), "off"));
   // A window manager can give another window the focus over the game (plorpOS's in-game menu on the GKD): the
@@ -1776,10 +1787,10 @@ int main(int argc, char **argv) {
   }
   SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
   SDL_DisplayMode display = {0};
-  // Fullscreen with POCKET_FULLSCREEN, and under gamescope (the Steam Deck's Game Mode): it scales a window to the
-  // screen keeping its shape, so a window there was letterboxed and EXPAND couldn't reach the edges.
+  // Fullscreen with --fullscreen, POCKET_FULLSCREEN, and under gamescope (the Steam Deck's Game Mode): it scales a
+  // window to the screen keeping its shape, so a window there was letterboxed and EXPAND couldn't reach the edges.
   const char *desktop = getenv("XDG_CURRENT_DESKTOP");
-  bool fullscreen = getenv("POCKET_FULLSCREEN") != NULL || (desktop && strstr(desktop, "gamescope"));
+  bool fullscreen = cli.fullscreen || getenv("POCKET_FULLSCREEN") != NULL || (desktop && strstr(desktop, "gamescope"));
   if (fullscreen && SDL_GetCurrentDisplayMode(0, &display))
     fullscreen = false;
   // POCKET_WINDOW=WxH: a window the size of a device's panel, for trying a layout on a desktop.
@@ -1810,25 +1821,24 @@ int main(int argc, char **argv) {
   SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
   audio_open();
   rawTrimui = getenv("POCKET_RAW_TRIMUI") && !strcmp(getenv("POCKET_RAW_TRIMUI"), "1");
-  snprintf(path, sizeof path, "%s/gamecontrollerdb.txt", root);
-  if (access(path, R_OK) == 0) {
-    int added = SDL_GameControllerAddMappingsFromFile(path);
-    fprintf(stderr, "Controller mappings from %s: %d\n", path, added);
+  if (access(paths.controllerDb, R_OK) == 0) {
+    int added = SDL_GameControllerAddMappingsFromFile(paths.controllerDb);
+    fprintf(stderr, "Controller mappings from %s: %d\n", paths.controllerDb, added);
   }
   for (int i = 0; i < SDL_NumJoysticks() && !controller; i++)
     if (SDL_IsGameController(i))
       controller_added(i);
   SDL_Joystick *js = !controller && rawTrimui && SDL_NumJoysticks() ? SDL_JoystickOpen(0) : NULL;
-  if (rom)
-    run_game(rom, frames, shot, false);
+  if (cli.rom)
+    run_game(cli.rom, cli.frames, cli.shot, false);
   else {
     /* DATA/roms, then the folders POCKET_ROM_DIRS names (colon-separated: the PortMaster launcher passes the
      * firmware's own gba / gb / gbc / nds folders), by file name. */
-    static char *paths[1024];
+    static char *romPaths[1024];
     static const char *names[1024];
     int count = 0;
-    char dirs[4096];
-    snprintf(dirs, sizeof dirs, "%s/roms%s%s", root, getenv("POCKET_ROM_DIRS") ? ":" : "",
+    char dirs[4096], path[PATH_MAX * 2];
+    snprintf(dirs, sizeof dirs, "%s%s%s", paths.romsDir, getenv("POCKET_ROM_DIRS") ? ":" : "",
              getenv("POCKET_ROM_DIRS") ? getenv("POCKET_ROM_DIRS") : "");
     char *save = NULL;
     for (char *dir = strtok_r(dirs, ":", &save); dir; dir = strtok_r(NULL, ":", &save)) {
@@ -1837,15 +1847,15 @@ int main(int argc, char **argv) {
       while (d && (e = readdir(d)) && count < 1024) {
         if (core_for(e->d_name)) {
           snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
-          paths[count++] = strdup(path);
+          romPaths[count++] = strdup(path);
         }
       }
       if (d)
         closedir(d);
     }
-    qsort(paths, count, sizeof(*paths), cmp);
+    qsort(romPaths, count, sizeof(*romPaths), cmp);
     for (int i = 0; i < count; i++)
-      names[i] = base_name(paths[i]);
+      names[i] = base_name(romPaths[i]);
     struct pd_menu list;
     pd_menu_init(&list, "PokeDaisy Linux", names, count);
     int ticks = 0;
@@ -1859,22 +1869,22 @@ int main(int argc, char **argv) {
       if (down(DOWN))
         pd_menu_move(&list, 1);
       if (down(A) && count)
-        appError = 0, run_game(paths[list.selected], 0, NULL, true); // the last game's result is the exit status
+        appError = 0, run_game(romPaths[list.selected], 0, NULL, true); // the last game's result is the exit status
       SDL_RenderClear(renderer);
       overlay_begin();
       pd_menu_draw(&list, &overlay);
       overlay_notice();
       overlay_draw(true);
       SDL_RenderPresent(renderer);
-      if (frames && ++ticks >= frames) {
-        if (shot && !capture(shot))
+      if (cli.frames && ++ticks >= cli.frames) {
+        if (cli.shot && !capture(cli.shot))
           appError = 1;
         break;
       }
       SDL_Delay(16);
     }
     for (int i = 0; i < count; i++)
-      free(paths[i]);
+      free(romPaths[i]);
   }
   if (js)
     SDL_JoystickClose(js);

@@ -12,6 +12,15 @@ mv ~/Downloads/pokedaisy-linux-x86_64.AppImage ~/Applications/pokedaisy.AppImage
 chmod +x ~/Applications/pokedaisy.AppImage
 ```
 
+> [!TIP]
+> If SteamOS says `fusermount3: too many fuse filesystems mounted`:
+> - Run with `APPIMAGE_EXTRACT_AND_RUN=1 ~/Applications/pokedaisy.AppImage` (bypasses FUSE).
+> - Or extract once for zero FUSE overhead:
+>   ```bash
+>   cd ~/Applications && ./pokedaisy.AppImage --appimage-extract && mv squashfs-root pokedaisy
+>   ```
+>   Launch target: `/home/deck/Applications/pokedaisy/AppRun`.
+
 By default, standalone mode uses XDG paths (`~/.local/share/pokedaisy/`, `~/.config/pokedaisy/settings.ini`) and stem-based save filenames (`<rom-stem>.sav`).
 
 ## 2. Steam Gaming Mode (Non-Steam Shortcut)

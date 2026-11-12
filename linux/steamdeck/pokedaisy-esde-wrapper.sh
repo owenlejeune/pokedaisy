@@ -4,6 +4,10 @@
 set -euo pipefail
 
 APPIMAGE="${POKEDAISY_APPIMAGE:-/home/deck/Applications/pokedaisy.AppImage}"
+if [ ! -f "$APPIMAGE" ] && [ -x "/home/deck/Applications/pokedaisy/AppRun" ]; then
+  APPIMAGE="/home/deck/Applications/pokedaisy/AppRun"
+fi
+export APPIMAGE_EXTRACT_AND_RUN=1
 ROM="${1:?usage: pokedaisy-esde-wrapper.sh <rom-path> [extra-args...]}"
 shift
 

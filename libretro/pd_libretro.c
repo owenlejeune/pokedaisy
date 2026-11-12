@@ -50,7 +50,7 @@ static const unsigned retroId[NKEYS] = {
     RETRO_DEVICE_ID_JOYPAD_L2,    RETRO_DEVICE_ID_JOYPAD_R2,   RETRO_DEVICE_ID_JOYPAD_SELECT, RETRO_DEVICE_ID_JOYPAD_L3};
 
 /* ---- the options this layer adds to mGBA's ---- */
-#define PD_OPTION_COUNT 3
+#define PD_OPTION_COUNT 4
 static const struct retro_core_option_v2_definition pdOptions[PD_OPTION_COUNT] = {
     {"pokedaisy_canvas", "Companion canvas", NULL, "The frame size the core reports: the game sits in it at a whole scale, the companion fills it. auto = 320x240.", NULL, NULL,
      {{"auto", NULL}, {"320x240", NULL}, {"341x256", NULL}, {"400x300", NULL}, {"427x240", NULL}, {NULL, NULL}}, "auto"},
@@ -58,6 +58,8 @@ static const struct retro_core_option_v2_definition pdOptions[PD_OPTION_COUNT] =
      {{"auto", NULL}, {"480x320", NULL}, {"480x800", NULL}, {"640x480", NULL}, {"720x480", NULL}, {"720x540", NULL}, {"720x720", NULL}, {"752x560", NULL}, {"960x544", NULL}, {"960x720", NULL}, {"1024x768", NULL}, {"1280x720", NULL}, {"1280x800", NULL}, {"1600x1440", NULL}, {"1920x1080", NULL}, {NULL, NULL}}, "auto"},
     {"pokedaisy_layout", "Companion layout", NULL, "auto = side-by-side on wide >=16:10 panels (1280x800+), overlay on handhelds.", NULL, NULL,
      {{"auto", NULL}, {"side-by-side", NULL}, {"overlay", NULL}, {NULL, NULL}}, "auto"},
+    {"pokedaisy_sidebar", "Companion sidebar width", NULL, "Width of the side-by-side companion pane, or hidden. auto = 320px.", NULL, NULL,
+     {{"auto", NULL}, {"320", NULL}, {"380", NULL}, {"440", NULL}, {"260", NULL}, {"hidden", NULL}, {NULL, NULL}}, "auto"},
 };
 
 static retro_environment_t realEnv;
@@ -206,6 +208,9 @@ static int CWMAX = 320, CHMAX = 240; // the largest canvas: what the buffers hol
 static int panelW, panelH;           // the frontend's screen, 0 = unknown (the canvas option alone then)
 static bool sideActive;              // true when 2-pane side-by-side mode is active (game left, live companion right)
 static int leftW = 320, rightW, sideScale = 1, sideLogW, sideLogH;
+static int sideWidth = 320;
+static bool sideHidden = false;
+static bool sideDragging = false;
 static int baseGW = 240, baseGH = 160; // the game's frame before the first picture
 static uint32_t *cvs;     // the companion's canvas, 0xRRGGBB
 static uint16_t *out565;  // what the frontend gets
@@ -214,7 +219,7 @@ static uint32_t *sidePixels;
 static size_t sideCap;
 static struct pd_canvas sideCanvas;
 static unsigned gameW, gameH;
-static inline int game_pane_w(void) { return sideActive ? leftW : CW; }
+static inline int game_pane_w(void) { return (sideActive && !sideHidden && rightW > 0) ? leftW : CW; }
 
 static char message[128];
 static int messageFrames;
@@ -896,7 +901,7 @@ static void side_canvas_size(int *w, int *h) {
 }
 
 static void update_pane_geom(void) {
-  if (!sideActive) {
+  if (!sideActive || sideHidden || sideWidth <= 0) {
     leftW = CW;
     rightW = 0;
     sideScale = 1;
@@ -905,9 +910,14 @@ static void update_pane_geom(void) {
     return;
   }
   sideScale = (CW >= 1920 && CH >= 960) ? 2 : 1;
-  rightW = PD_UI_WIDTH * sideScale;
+  int w = sideWidth > 0 ? sideWidth : PD_UI_WIDTH;
+  if (w > CW - 240)
+    w = CW - 240;
+  if (w < 160)
+    w = 160;
+  rightW = w;
   leftW = CW - rightW;
-  sideLogW = PD_UI_WIDTH;
+  sideLogW = rightW / sideScale;
   sideLogH = CH / sideScale;
 }
 
@@ -920,6 +930,25 @@ static void read_options(void) {
     hudDrawnKey = 0;
   }
   lastOptLayout = l;
+  const char *sb = pd_option("pokedaisy_sidebar");
+  if (sb) {
+    if (!strcmp(sb, "hidden")) {
+      sideHidden = true;
+    } else if (!strcmp(sb, "260")) {
+      sideHidden = false;
+      sideWidth = 260;
+    } else if (!strcmp(sb, "380")) {
+      sideHidden = false;
+      sideWidth = 380;
+    } else if (!strcmp(sb, "440")) {
+      sideHidden = false;
+      sideWidth = 440;
+    } else if (!strcmp(sb, "320") || !strcmp(sb, "auto")) {
+      sideHidden = false;
+      sideWidth = 320;
+    }
+    update_pane_geom();
+  }
 }
 
 static void choose_canvas(void) {
@@ -1374,8 +1403,22 @@ static void draw_companion_pane(struct pd_canvas *dst, bool drawFocus) {
 }
 
 static void blit_sidebar(void) {
-  if (!sideActive || sideLogW <= 0 || sideLogH <= 0)
+  if (!sideActive)
     return;
+  if (sideHidden || sideLogW <= 0 || sideLogH <= 0) {
+    uint32_t edgeColor = 0x333333;
+    uint16_t edge565 = to565(edgeColor);
+    for (int y = 0; y < CH; y++) {
+      if (direct565) {
+        out565[(size_t)y * CW + CW - 2] = edge565;
+        out565[(size_t)y * CW + CW - 1] = edge565;
+      } else {
+        cvs[(size_t)y * CW + CW - 2] = edgeColor;
+        cvs[(size_t)y * CW + CW - 1] = edgeColor;
+      }
+    }
+    return;
+  }
   size_t need = (size_t)sideLogW * sideLogH;
   if (need > sideCap) {
     uint32_t *next = realloc(sidePixels, need * sizeof *sidePixels);
@@ -1399,6 +1442,19 @@ static void blit_sidebar(void) {
       else
         for (int x = 0; x < rightW && x / sideScale < sideLogW; x++)
           dst[x] = src[x / sideScale];
+    }
+  }
+  uint32_t divColor = companion ? 0xFF7331 : (sideDragging ? 0x606060 : 0x242424);
+  uint16_t divColor565 = to565(divColor);
+  for (int y = 0; y < CH; y++) {
+    if (leftW >= 2) {
+      if (direct565) {
+        out565[(size_t)y * CW + leftW - 2] = divColor565;
+        out565[(size_t)y * CW + leftW - 1] = divColor565;
+      } else {
+        cvs[(size_t)y * CW + leftW - 2] = divColor;
+        cvs[(size_t)y * CW + leftW - 1] = divColor;
+      }
     }
   }
 }
@@ -1437,10 +1493,46 @@ RETRO_API void retro_run(void) {
     touchDown = touchWas = false;
     sideTouch = false;
   }
-  if (sideActive && touchDown && !touchWas && touchX >= leftW)
-    sideTouch = true;
+  if (sideActive) {
+    if (touchDown && !touchWas) {
+      if (sideHidden && touchX >= CW - 32) {
+        sideHidden = false;
+        if (sideWidth < 260)
+          sideWidth = 320;
+        update_pane_geom();
+        companion = true;
+        haveGameFrame = false;
+      } else if (!sideHidden && abs(touchX - leftW) <= 20) {
+        sideDragging = true;
+      } else if (!sideHidden && touchX >= leftW) {
+        sideTouch = true;
+        companion = true;
+      } else if (!sideHidden && touchX < leftW) {
+        companion = false;
+      }
+    }
+    if (sideDragging) {
+      if (touchDown) {
+        int newRightW = CW - touchX;
+        if (newRightW < 120) {
+          sideHidden = true;
+        } else {
+          sideHidden = false;
+          if (newRightW < 200)
+            newRightW = 200;
+          if (newRightW > CW - 240)
+            newRightW = CW - 240;
+          sideWidth = newRightW;
+        }
+        update_pane_geom();
+        haveGameFrame = false;
+      } else {
+        sideDragging = false;
+      }
+    }
+  }
   bool wasSideTouch = sideTouch;
-  if (sideActive && sideLogW > 0 && sideTouch) {
+  if (sideActive && sideLogW > 0 && sideTouch && !sideHidden) {
     if (touchDown) {
       int sx = (touchX - leftW) / sideScale;
       int sy = touchY / sideScale;
@@ -1480,7 +1572,16 @@ RETRO_API void retro_run(void) {
   }
   bool wasCompanion = companion;
   if (down(companionBtn) && !hudFocus) {
-    companion = !companion;
+    if (sideActive && sideHidden) {
+      sideHidden = false;
+      if (sideWidth < 260)
+        sideWidth = 320;
+      update_pane_geom();
+      companion = true;
+      haveGameFrame = false;
+    } else {
+      companion = !companion;
+    }
     quickOpen = flyList = repelList = false;
     flyAsk = 0;
   }

@@ -284,9 +284,26 @@ static void pointer_at_window(int wx, int wy) {
     pointer_at(wx, wy);
 }
 static void pointer_at_finger(float nx, float ny) {
-  int ow = 0, oh = 0;
-  if (renderer && SDL_GetRendererOutputSize(renderer, &ow, &oh) == 0 && ow > 0 && oh > 0)
-    pointer_at((int)(nx * ow), (int)(ny * oh));
+  if (!window || !renderer)
+    return;
+  int winW = 0, winH = 0, winX = 0, winY = 0, ow = 0, oh = 0;
+  SDL_GetWindowSize(window, &winW, &winH);
+  SDL_GetWindowPosition(window, &winX, &winY);
+  int dispIndex = SDL_GetWindowDisplayIndex(window);
+  SDL_DisplayMode dm;
+  int dispW = 1280, dispH = 800;
+  if (dispIndex >= 0 && SDL_GetCurrentDisplayMode(dispIndex, &dm) == 0 && dm.w > 0 && dm.h > 0) {
+    dispW = dm.w;
+    dispH = dm.h;
+  }
+  float screenX = nx * (float)dispW;
+  float screenY = ny * (float)dispH;
+  float wx = screenX - (float)winX;
+  float wy = screenY - (float)winY;
+  if (SDL_GetRendererOutputSize(renderer, &ow, &oh) == 0 && winW > 0 && winH > 0 && ow > 0 && oh > 0)
+    pointer_at((int)(wx * (float)ow / (float)winW), (int)(wy * (float)oh / (float)winH));
+  else
+    pointer_at((int)wx, (int)wy);
 }
 static bool audioLost, outputChanged;
 static int key_named(const char *s);
@@ -365,12 +382,12 @@ static void events(void) {
       if (e.jaxis.axis == 5)
         key(R2, e.jaxis.value > 16000);
     }
-    if ((e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) && e.button.which != SDL_TOUCH_MOUSEID) {
+    if (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) {
       pointer_at_window(e.button.x, e.button.y);
       if (e.button.button == SDL_BUTTON_LEFT)
         pointerDown = e.type == SDL_MOUSEBUTTONDOWN;
     }
-    if (e.type == SDL_MOUSEMOTION && e.motion.which != SDL_TOUCH_MOUSEID)
+    if (e.type == SDL_MOUSEMOTION)
       pointer_at_window(e.motion.x, e.motion.y);
     if (e.type == SDL_FINGERDOWN || e.type == SDL_FINGERUP) {
       pointer_at_finger(e.tfinger.x, e.tfinger.y);
@@ -433,9 +450,10 @@ static struct {
   bool rewind, lcd;
   bool swapAB; // the controller's A / B and X / Y the other way round (devices disagree on which is SDL's "A")
   int layout;  // 0 = AUTO, 1 = SIDE BY SIDE, 2 = OVERLAY
+  int sidebar; // 0 = AUTO (320px), 1 = 380px, 2 = 440px, 3 = 260px, 4 = HIDDEN
   int hotkey[HK_ACTIONS]; // the HOTKEYS page's button per action, -1 none
   int dsHotkey[HK_ACTIONS];
-} hostSet = {0, false, false, false, 0, {R2, L2, -1, -1}, {R3, L3, -1, -1}};
+} hostSet = {0, false, false, false, 0, 0, {R2, L2, -1, -1}, {R3, L3, -1, -1}};
 static char hostIni[PATH_MAX];
 static void host_load(void) {
   FILE *f = fopen(hostIni, "r");
@@ -452,6 +470,8 @@ static void host_load(void) {
       hostSet.swapAB = v != 0;
     if (sscanf(line, "layout=%d", &v) == 1 && v >= 0 && v <= 2)
       hostSet.layout = v;
+    if (sscanf(line, "sidebar=%d", &v) == 1 && v >= 0 && v <= 4)
+      hostSet.sidebar = v;
     for (int i = 0; i < HK_ACTIONS; i++) {
       char key[32], name[16];
       snprintf(key, sizeof key, "hk_%s=%%15s", hotkeyIds[i]);
@@ -470,8 +490,8 @@ static void host_save(void) {
   FILE *f = fopen(hostIni, "w");
   if (!f)
     return;
-  fprintf(f, "ff_speed=%d\nrewind=%d\nlcd=%d\nswap_ab=%d\nlayout=%d\n", hostSet.ffSpeed, hostSet.rewind, hostSet.lcd,
-          hostSet.swapAB, hostSet.layout);
+  fprintf(f, "ff_speed=%d\nrewind=%d\nlcd=%d\nswap_ab=%d\nlayout=%d\nsidebar=%d\n", hostSet.ffSpeed, hostSet.rewind, hostSet.lcd,
+          hostSet.swapAB, hostSet.layout, hostSet.sidebar);
   for (int i = 0; i < HK_ACTIONS; i++) {
     fprintf(f, "hk_%s=%s\n", hotkeyIds[i], key_name(hostSet.hotkey[i]));
     fprintf(f, "ds_hk_%s=%s\n", hotkeyIds[i], key_name(hostSet.dsHotkey[i]));
@@ -682,6 +702,7 @@ static struct {
 static int optionN;
 static char panelValue[32];
 static char layoutValue[24] = "auto";
+static char sidebarValue[24] = "auto";
 static bool optionsChanged;
 static void options_from(const struct retro_core_option_v2_definition *d) {
   for (optionN = 0; d && d->key && optionN < (int)(sizeof options / sizeof options[0]); d++, optionN++) {
@@ -758,6 +779,8 @@ static bool environment(unsigned cmd, void *data) {
       v->value = panelValue;
     if (!strcmp(v->key, "pokedaisy_layout"))
       v->value = layoutValue;
+    if (!strcmp(v->key, "pokedaisy_sidebar"))
+      v->value = sidebarValue;
     for (int i = 0; i < optionN && !v->value; i++)
       if (!strcmp(options[i].key, v->key))
         v->value = options[i].value;
@@ -1109,6 +1132,7 @@ static unsigned joypad(unsigned keys) {
              {UP, RETRO_DEVICE_ID_JOYPAD_UP},         {DOWN, RETRO_DEVICE_ID_JOYPAD_DOWN},
              {R, RETRO_DEVICE_ID_JOYPAD_R},           {L, RETRO_DEVICE_ID_JOYPAD_L},
              {X, RETRO_DEVICE_ID_JOYPAD_X},           {Y, RETRO_DEVICE_ID_JOYPAD_Y},
+             {P1, RETRO_DEVICE_ID_JOYPAD_X},
              {L2, RETRO_DEVICE_ID_JOYPAD_L2},         {R2, RETRO_DEVICE_ID_JOYPAD_R2},
              {L3, RETRO_DEVICE_ID_JOYPAD_L3},         {R3, RETRO_DEVICE_ID_JOYPAD_R3}};
   unsigned bits = 0;
@@ -1289,6 +1313,15 @@ static void layout_follow(int mode) {
     optionsChanged = true;
   }
 }
+static const int sidebarWidths[5] = {0, 380, 440, 260, -1};
+static const char *const sidebarLabels[5] = {"AUTO (320px)", "380px", "440px", "260px", "HIDDEN"};
+static void sidebar_follow(int width) {
+  const char *v = width == -1 ? "hidden" : width == 260 ? "260" : width == 380 ? "380" : width == 440 ? "440" : width == 320 ? "320" : "auto";
+  if (strcmp(v, sidebarValue)) {
+    snprintf(sidebarValue, sizeof sidebarValue, "%s", v);
+    optionsChanged = true;
+  }
+}
 static void panel_follow(void) {
   int ow = W, oh = H;
   SDL_GetRendererOutputSize(renderer, &ow, &oh);
@@ -1398,7 +1431,7 @@ extern int pd_ds_run(const char *, const char *, int, const char *, SDL_Renderer
 static bool ds_running(void) { return running != 0; }
 #endif
 // The host menu's rows, top to bottom (fast-forward is the FAST FORWARD hotkey's, held).
-enum { M_RESUME, M_SAVE, M_LOAD, M_HOTKEYS, M_REWIND, M_FFSPEED, M_LCD, M_SWAP, M_LAYOUT, M_QUIT, M_COUNT };
+enum { M_RESUME, M_SAVE, M_LOAD, M_HOTKEYS, M_REWIND, M_FFSPEED, M_LCD, M_SWAP, M_LAYOUT, M_SIDEBAR, M_QUIT, M_COUNT };
 static void run_game(const char *path, int maxFrames, const char *shot, bool fromList) {
 #ifdef POCKET_DSPERATE
   const char *ext = strrchr(path, '.');
@@ -1472,6 +1505,7 @@ static void run_game(const char *path, int maxFrames, const char *shot, bool fro
   pixelFormat = RETRO_PIXEL_FORMAT_0RGB1555;
   int effLayout = cli.layout != POCKET_LAYOUT_AUTO ? (int)cli.layout : hostSet.layout;
   layout_follow(effLayout);
+  sidebar_follow(sidebarWidths[hostSet.sidebar >= 0 && hostSet.sidebar < 5 ? hostSet.sidebar : 0]);
   panel_follow();
   optionsChanged = false;
   core.set_environment(environment);
@@ -1551,6 +1585,7 @@ static void run_game(const char *path, int maxFrames, const char *shot, bool fro
     snprintf(rows[M_SWAP], 40, "A/B BUTTONS  %s", hostSet.swapAB ? "SWAPPED" : "NORMAL");
     static const char *const layoutLabels[3] = {"AUTO", "SIDE BY SIDE", "OVERLAY"};
     snprintf(rows[M_LAYOUT], 40, "LAYOUT  %s", layoutLabels[effLayout >= 0 && effLayout < 3 ? effLayout : 0]);
+    snprintf(rows[M_SIDEBAR], 40, "SIDEBAR  %s", sidebarLabels[hostSet.sidebar >= 0 && hostSet.sidebar < 5 ? hostSet.sidebar : 0]);
     snprintf(rows[M_HOTKEYS], 40, "HOTKEYS");
     snprintf(rows[M_QUIT], 40, fromList ? "QUIT TO GAME LIST" : "QUIT");
     for (int i = 0; i < M_COUNT; i++)
@@ -1685,17 +1720,20 @@ static void run_game(const char *path, int maxFrames, const char *shot, bool fro
           host_save();
           layout_follow(effLayout);
           break;
+        case M_SIDEBAR:
+          hostSet.sidebar = (hostSet.sidebar + 1) % 5;
+          host_save();
+          sidebar_follow(sidebarWidths[hostSet.sidebar]);
+          break;
         case M_HOTKEYS:
           hkPage = true;
           pd_menu_init(&hkMenu, "HOTKEYS", hkPtrs, HK_ACTIONS);
           hkMenu.overlay = true;
           break;
         case M_QUIT:
-          confirming = M_QUIT;
-          confirmRows[0] = "CANCEL";
-          confirmRows[1] = fromList ? "QUIT TO GAME LIST" : "QUIT";
-          pd_menu_init(&confirmMenu, "LEAVE THE GAME?", confirmRows, 2);
-          confirmMenu.overlay = true;
+          running = 0;
+          leave = true;
+          menuOpen = false;
           break;
         }
       }
@@ -1924,8 +1962,10 @@ int main(int argc, char **argv) {
     while (running) {
       events();
       repeat_directions();
-      if (down(B) || down(MENU))
+      if (down(B) || down(MENU)) {
+        running = 0;
         break;
+      }
       if (down(UP))
         pd_menu_move(&list, -1);
       if (down(DOWN))
